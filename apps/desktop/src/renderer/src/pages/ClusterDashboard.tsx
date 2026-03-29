@@ -129,9 +129,26 @@ export default function ClusterDashboard() {
     if (aiLoading) return
     setAiLoading(true)
     setAiPanelOpen(true)
+    setAiSummary(null)
     try {
-      const result = await window.api.ai.clusterHealth()
-      setAiSummary(result?.data ?? 'Unable to generate health summary.')
+      const configured = await window.api.ai.isConfigured()
+      if (!configured?.data) {
+        setAiSummary('AI is not configured. Go to Settings (⌘7) → AI Configuration to add your API key.')
+        return
+      }
+      const result = await window.api.ai.clusterHealth({
+        topics: stats.topicCount,
+        consumerGroups: stats.consumerGroupCount,
+        brokers: stats.brokerCount,
+        underReplicatedPartitions: unhealthyTopics.length,
+        totalLag: consumerGroups.reduce((sum, g) => sum + (g.totalLag ?? 0), 0),
+        dlqMessages: stats.dlqMessages
+      })
+      if (result?.success && result.data) {
+        setAiSummary(typeof result.data === 'string' ? result.data : (result.data as { content: string }).content)
+      } else {
+        setAiSummary(result?.error ?? 'Unable to generate health summary.')
+      }
     } catch {
       setAiSummary('AI health analysis is not available. Check your AI settings.')
     } finally {

@@ -139,7 +139,15 @@ export const useDataStore = create<DataStore>((set, get) => ({
     try {
       const res = await window.api.schema.subjects(clusterId)
       if (res.success && res.data) {
-        set({ schemaSubjects: res.data })
+        const names: string[] = res.data as unknown as string[]
+        const subjects: SchemaSubject[] = names.map((name) => ({
+          subject: typeof name === 'string' ? name : (name as unknown as SchemaSubject).subject,
+          versions: (name as unknown as SchemaSubject).versions ?? [],
+          latestVersion: (name as unknown as SchemaSubject).latestVersion ?? 0,
+          compatibility: (name as unknown as SchemaSubject).compatibility ?? 'BACKWARD',
+          schemaType: (name as unknown as SchemaSubject).schemaType ?? 'AVRO'
+        }))
+        set({ schemaSubjects: subjects })
       }
     } catch {
       // keep existing state

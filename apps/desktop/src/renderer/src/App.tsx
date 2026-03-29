@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { useUIStore } from '@/stores/uiStore'
 import { useClusterStore } from '@/stores/clusterStore'
+import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import ClusterDashboard from '@/pages/ClusterDashboard'
 import TopicList from '@/pages/TopicList'
 import MessageBrowser from '@/pages/MessageBrowser'
@@ -33,7 +34,9 @@ function App(): React.ReactElement {
 
   return (
     <AppLayout>
-      {pageMap[currentPage] ?? <ClusterDashboard />}
+      <ErrorBoundary key={currentPage}>
+        {pageMap[currentPage] ?? <ClusterDashboard />}
+      </ErrorBoundary>
       <NotificationToasts />
     </AppLayout>
   )

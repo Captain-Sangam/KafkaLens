@@ -88,6 +88,7 @@ export interface ConsumerGroupInfo {
   state: string
   members: number
   protocolType: string
+  totalLag: number
   topics: string[]
 }
 
@@ -568,30 +569,65 @@ class KafkaService {
     const groupIds = groups.map((g) => g.groupId)
     const described = await admin.describeGroups(groupIds)
 
-    return described.groups.map((g) => {
+    const results: ConsumerGroupInfo[] = []
+
+    for (const g of described.groups) {
       const topics = new Set<string>()
       for (const member of g.members) {
         try {
           const assignment = member.memberAssignment
-          if (assignment && Buffer.isBuffer(assignment)) {
-            // KafkaJS returns raw bytes; parse the topic names from the assignment
-            const str = assignment.toString('utf-8')
-            // Simple extraction: topic names appear as readable strings in the protocol
-            // Fall back to empty if parsing fails
+          if (assignment && Buffer.isBuffer(assignment) && assignment.length > 0) {
+            let offset = 0
+            const version = assignment.readInt16BE(offset); offset += 2
+            const topicCount = assignment.readInt32BE(offset); offset += 4
+            for (let t = 0; t < topicCount && offset < assignment.length - 2; t++) {
+              const topicLen = assignment.readInt16BE(offset); offset += 2
+              if (topicLen > 0 && offset + topicLen <= assignment.length) {
+                topics.add(assignment.toString('utf-8', offset, offset + topicLen))
+                offset += topicLen
+              }
+              if (offset + 4 <= assignment.length) {
+                const partCount = assignment.readInt32BE(offset); offset += 4
+                offset += partCount * 4
+              }
+            }
           }
         } catch {
-          /* ignore parse errors */
+          /* assignment parsing is best-effort */
         }
       }
 
-      return {
+      let totalLag = 0
+      try {
+        const offsets = await admin.fetchOffsets({ groupId: g.groupId })
+        for (const o of offsets) {
+          if (o.offset === '-1') continue
+          try {
+            const topicOffsets = await admin.fetchTopicOffsets(o.topic)
+            const partInfo = topicOffsets.find((p) => String(p.partition) === String(o.partition))
+            if (partInfo) {
+              const lag = Number(partInfo.offset) - Number(o.offset)
+              if (lag > 0) totalLag += lag
+            }
+          } catch {
+            /* skip topics we can't access */
+          }
+        }
+      } catch {
+        /* offsets unavailable */
+      }
+
+      results.push({
         groupId: g.groupId,
         state: g.state,
         members: g.members.length,
         protocolType: g.protocolType,
+        totalLag,
         topics: Array.from(topics)
-      }
-    })
+      })
+    }
+
+    return results
   }
 
   async describeConsumerGroup(

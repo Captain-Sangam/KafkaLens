@@ -25,6 +25,15 @@ function registerClusterHandlers(): void {
   ipcMain.handle('cluster:connect', async (_event, clusterId, config) => {
     try {
       const data = await kafkaService.connect(clusterId, config)
+
+      if (config.schemaRegistryUrl) {
+        schemaService.configure(clusterId, {
+          url: config.schemaRegistryUrl,
+          username: config.schemaRegistryAuth?.username ?? config.schemaRegistryUsername,
+          password: config.schemaRegistryAuth?.password ?? config.schemaRegistryPassword
+        })
+      }
+
       return { success: true, data } satisfies IpcResult
     } catch (error) {
       return { success: false, error: wrapError(error) } satisfies IpcResult

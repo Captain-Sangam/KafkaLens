@@ -212,7 +212,7 @@ export function BrokerConfig() {
     if (brokerConfigs[brokerId]) return
     setConfigLoading(true)
     try {
-      const res = await window.api.brokers.config(activeClusterId!, brokerId)
+      const res = await window.api.brokers.config(activeClusterId ?? '', brokerId)
       if (res.success && res.data) {
         setBrokerConfigs((prev) => ({ ...prev, [brokerId]: res.data! }))
       }
@@ -267,6 +267,9 @@ export function BrokerConfig() {
     setAiLoading(true)
     setAiAdvice(null)
     try {
+      const { checkAIConfigured } = await import('@/lib/ai-guard')
+      const check = await checkAIConfigured()
+      if (!check.ok) { setAiAdvice(check.message!); return }
       const res = await window.api.ai.adviseTopicConfig(currentConfig)
       if (res.success && res.data) {
         setAiAdvice(res.data.content)

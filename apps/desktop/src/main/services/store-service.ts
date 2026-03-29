@@ -95,10 +95,26 @@ class StoreService {
     return row ? this.mapClusterRow(row) : undefined
   }
 
-  saveCluster(cluster: ClusterRow): void {
+  saveCluster(cluster: Record<string, unknown>): void {
+    const row = {
+      id: cluster.id,
+      name: cluster.name,
+      bootstrapServers: cluster.bootstrapServers,
+      authMethod: cluster.authMethod ?? 'none',
+      username: cluster.username ?? null,
+      password: cluster.password ?? null,
+      sslCertPath: cluster.sslCertPath ?? null,
+      schemaRegistryUrl: cluster.schemaRegistryUrl ?? null,
+      schemaRegistryUsername: (cluster.schemaRegistryAuth as Record<string, string>)?.username ?? cluster.schemaRegistryUsername ?? null,
+      schemaRegistryPassword: (cluster.schemaRegistryAuth as Record<string, string>)?.password ?? cluster.schemaRegistryPassword ?? null,
+      environmentLabel: cluster.environmentLabel ?? 'local',
+      colorTag: cluster.colorTag ?? '#6366f1',
+      createdAt: cluster.createdAt ?? Date.now(),
+      updatedAt: cluster.updatedAt ?? Date.now()
+    }
     this.db
       .prepare(
-        `INSERT INTO clusters (
+        `INSERT OR REPLACE INTO clusters (
           id, name, bootstrap_servers, auth_method,
           username, password, ssl_cert_path,
           schema_registry_url, schema_registry_username, schema_registry_password,
@@ -110,15 +126,29 @@ class StoreService {
           @environmentLabel, @colorTag, @createdAt, @updatedAt
         )`
       )
-      .run(cluster)
+      .run(row)
   }
 
-  // TODO: v2 — migrate sensitive fields (password, schemaRegistryPassword) to OS Keychain
-  updateCluster(id: string, updates: Partial<ClusterRow>): void {
+  updateCluster(id: string, updates: Record<string, unknown>): void {
     const current = this.getCluster(id)
     if (!current) throw new Error(`Cluster not found: ${id}`)
 
-    const merged = { ...current, ...updates, id, updatedAt: Date.now() }
+    const merged = {
+      ...current,
+      name: updates.name ?? current.name,
+      bootstrapServers: updates.bootstrapServers ?? current.bootstrapServers,
+      authMethod: updates.authMethod ?? current.authMethod,
+      username: updates.username ?? current.username ?? null,
+      password: updates.password ?? current.password ?? null,
+      sslCertPath: updates.sslCertPath ?? current.sslCertPath ?? null,
+      schemaRegistryUrl: updates.schemaRegistryUrl ?? current.schemaRegistryUrl ?? null,
+      schemaRegistryUsername: (updates.schemaRegistryAuth as Record<string, string>)?.username ?? updates.schemaRegistryUsername ?? current.schemaRegistryUsername ?? null,
+      schemaRegistryPassword: (updates.schemaRegistryAuth as Record<string, string>)?.password ?? updates.schemaRegistryPassword ?? current.schemaRegistryPassword ?? null,
+      environmentLabel: updates.environmentLabel ?? current.environmentLabel,
+      colorTag: updates.colorTag ?? current.colorTag,
+      id,
+      updatedAt: Date.now()
+    }
     this.db
       .prepare(
         `UPDATE clusters SET

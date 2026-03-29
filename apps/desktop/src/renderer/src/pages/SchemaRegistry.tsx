@@ -114,7 +114,7 @@ function RegisterSchemaModal({
     setError(null)
 
     try {
-      const res = await window.api.schema.register(activeClusterId!, subject, schemaText, schemaType)
+      const res = await window.api.schema.register(activeClusterId ?? '', subject, schemaText, schemaType)
       if (res.success) {
         addNotification('success', `Registered new version (id: ${res.data?.id}) for ${subject}`)
         onRegistered()
@@ -215,7 +215,7 @@ function DeleteVersionDialog({
   const handleDelete = async () => {
     setDeleting(true)
     try {
-      const res = await window.api.schema.deleteVersion(activeClusterId!, subject, version)
+      const res = await window.api.schema.deleteVersion(activeClusterId ?? '', subject, version)
       if (res.success) {
         addNotification('success', `Deleted version ${version} of ${subject}`)
         onDeleted()
@@ -266,8 +266,8 @@ function SchemaDetail({
   const { activeClusterId } = useClusterStore()
   const addNotification = useUIStore((s) => s.addNotification)
 
-  const [versions, setVersions] = useState<number[]>(subject.versions)
-  const [selectedVersion, setSelectedVersion] = useState(subject.latestVersion)
+  const [versions, setVersions] = useState<number[]>(subject.versions.length > 0 ? subject.versions : [])
+  const [selectedVersion, setSelectedVersion] = useState(subject.latestVersion || 1)
   const [schema, setSchema] = useState<SchemaVersion | null>(null)
   const [prevSchema, setPrevSchema] = useState<SchemaVersion | null>(null)
   const [showDiff, setShowDiff] = useState(false)
@@ -279,17 +279,21 @@ function SchemaDetail({
 
   const fetchVersions = useCallback(async () => {
     try {
-      const res = await window.api.schema.versions(activeClusterId!, subject.subject)
-      if (res.success && res.data) setVersions(res.data)
+      const res = await window.api.schema.versions(activeClusterId ?? '', subject.subject)
+      if (res.success && res.data && (res.data as number[]).length > 0) {
+        const v = res.data as number[]
+        setVersions(v)
+        setSelectedVersion(Math.max(...v))
+      }
     } catch {
       // keep existing versions
     }
-  }, [activeClusterId, subject.subject, subject.versions])
+  }, [activeClusterId, subject.subject])
 
   const fetchSchema = useCallback(async (version: number) => {
     setLoadingSchema(true)
     try {
-      const res = await window.api.schema.get(activeClusterId!, subject.subject, version)
+      const res = await window.api.schema.get(activeClusterId ?? '', subject.subject, version)
       if (res.success && res.data) {
         setSchema(res.data as SchemaVersion)
       }
@@ -303,7 +307,7 @@ function SchemaDetail({
   const fetchPrevSchema = useCallback(async (version: number) => {
     if (version <= 1) { setPrevSchema(null); return }
     try {
-      const res = await window.api.schema.get(activeClusterId!, subject.subject, version - 1)
+      const res = await window.api.schema.get(activeClusterId ?? '', subject.subject, version - 1)
       if (res.success && res.data) setPrevSchema(res.data as SchemaVersion)
     } catch {
       // failed to fetch previous schema
@@ -327,6 +331,9 @@ function SchemaDetail({
     setAiLoading(true)
     setAiExplanation(null)
     try {
+      const { checkAIConfigured } = await import('@/lib/ai-guard')
+      const check = await checkAIConfigured()
+      if (!check.ok) { setAiExplanation(check.message!); return }
       const res = await window.api.ai.explainSchemaDiff(subject.subject, prevSchema.schema, schema.schema)
       if (res.success && res.data) {
         setAiExplanation(res.data.content)

@@ -40,6 +40,10 @@ export const useClusterStore = create<ClusterStore>((set, get) => ({
           connections[c.id] = { config: c, status: 'disconnected' }
         }
         set({ clusters, connections, isLoading: false })
+
+        if (clusters.length > 0) {
+          get().connectCluster(clusters[0].id)
+        }
       } else {
         set({ clusters: [], connections: {}, isLoading: false })
       }
@@ -49,6 +53,11 @@ export const useClusterStore = create<ClusterStore>((set, get) => ({
   },
 
   addCluster: async (config) => {
+    const res = await window.api.cluster.save(config)
+    if (!res.success) {
+      throw new Error(res.error ?? 'Failed to save cluster')
+    }
+
     set((state) => ({
       clusters: [...state.clusters, config],
       connections: {
@@ -56,29 +65,27 @@ export const useClusterStore = create<ClusterStore>((set, get) => ({
         [config.id]: { config, status: 'disconnected' }
       }
     }))
-
-    try {
-      await window.api.cluster.save(config)
-    } catch {
-      // optimistic update already applied
-    }
   },
 
   updateCluster: async (id, updates) => {
+    const res = await window.api.cluster.update(id, updates)
+    if (!res.success) {
+      throw new Error(res.error ?? 'Failed to update cluster')
+    }
+
     set((state) => ({
       clusters: state.clusters.map((c) =>
         c.id === id ? { ...c, ...updates, updatedAt: Date.now() } : c
       )
     }))
-
-    try {
-      await window.api.cluster.update(id, updates)
-    } catch {
-      // optimistic update already applied
-    }
   },
 
   removeCluster: async (id) => {
+    const res = await window.api.cluster.delete(id)
+    if (!res.success) {
+      throw new Error(res.error ?? 'Failed to delete cluster')
+    }
+
     set((state) => ({
       clusters: state.clusters.filter((c) => c.id !== id),
       connections: Object.fromEntries(
@@ -86,12 +93,6 @@ export const useClusterStore = create<ClusterStore>((set, get) => ({
       ),
       activeClusterId: state.activeClusterId === id ? null : state.activeClusterId
     }))
-
-    try {
-      await window.api.cluster.delete(id)
-    } catch {
-      // optimistic update already applied
-    }
   },
 
   setActiveCluster: (id) => set({ activeClusterId: id }),

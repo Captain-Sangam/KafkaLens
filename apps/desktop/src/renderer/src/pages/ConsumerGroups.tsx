@@ -450,7 +450,7 @@ function GroupRow({
           {group.topics.length}
         </td>
         <td className="px-4 py-2.5 text-right tabular-nums text-text-secondary">
-          {group.totalLag.toLocaleString()}
+          {(group.totalLag ?? 0).toLocaleString()}
         </td>
         <td className="px-4 py-2.5 text-right">
           <div className="flex items-center justify-end gap-2">
@@ -593,7 +593,7 @@ export default function ConsumerGroups() {
                       key={g.groupId}
                       group={g}
                       expanded={expanded}
-                      clusterId={activeClusterId!}
+                      clusterId={activeClusterId ?? ''}
                       isProd={isProd}
                       onToggle={() => setExpandedId(expanded ? null : g.groupId)}
                     />

@@ -71,7 +71,7 @@ function ReplayToCustomModal({
     if (!targetTopic.trim()) return
     setSending(true)
     try {
-      const ok = await produceMessage(activeClusterId!, {
+      const ok = await produceMessage(activeClusterId ?? '', {
         topic: targetTopic,
         key: message.key,
         value: message.value,
@@ -157,7 +157,7 @@ function MessageDetail({
     }
     setReplayingOriginal(true)
     try {
-      const ok = await produceMessage(activeClusterId!, {
+      const ok = await produceMessage(activeClusterId ?? '', {
         topic: message.originalTopic,
         key: message.key,
         value: message.value,
@@ -179,7 +179,7 @@ function MessageDetail({
     setMarkingReviewed(true)
     try {
       const res = await window.api.dlq.markReviewed(
-        activeClusterId!,
+        activeClusterId ?? '',
         message.topic,
         message.partition,
         message.offset,
@@ -201,6 +201,9 @@ function MessageDetail({
     setAiLoading(true)
     setAiAnalysis(null)
     try {
+      const { checkAIConfigured } = await import('@/lib/ai-guard')
+      const check = await checkAIConfigured()
+      if (!check.ok) { setAiAnalysis(check.message!); return }
       const res = await window.api.ai.analyzeDLQ(
         message.exceptionClass ?? '',
         message.exceptionMessage ?? '',
@@ -581,7 +584,7 @@ export default function DLQDashboard() {
 
       try {
         const { produceMessage } = useDataStore.getState()
-        const ok = await produceMessage(activeClusterId!, {
+        const ok = await produceMessage(activeClusterId ?? '', {
           topic: msg.originalTopic!,
           key: msg.key,
           value: msg.value,

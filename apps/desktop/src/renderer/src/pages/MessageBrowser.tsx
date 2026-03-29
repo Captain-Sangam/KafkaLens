@@ -271,7 +271,7 @@ export default function MessageBrowser() {
       {showProduceModal && (
         <ProduceMessageModal
           topic={selectedTopicName}
-          clusterId={activeClusterId!}
+          clusterId={activeClusterId ?? ''}
           onClose={() => setShowProduceModal(false)}
           onProduce={produceMessage}
           addNotification={addNotification}
@@ -503,6 +503,9 @@ function MessageRow({
     setAiLoading(true)
     setAiResponse(null)
     try {
+      const { checkAIConfigured } = await import('@/lib/ai-guard')
+      const check = await checkAIConfigured()
+      if (!check.ok) { setAiResponse(check.message!); return }
       const result = await window.api.ai.explainMessage(message.value, undefined)
       setAiResponse(typeof result === 'string' ? result : result?.explanation ?? JSON.stringify(result))
     } catch (err) {
