@@ -13,11 +13,9 @@ A free, open-source desktop application for managing, inspecting, and debugging 
 - **Schema Registry browser** — Explore schemas, view version history, register new versions, and compare schema diffs side-by-side
 - **Dead Letter Queue dashboard** — Auto-detect DLQ topics, inspect failure details, replay messages to original or custom topics, and bulk replay
 - **Broker configuration** — View broker configs with inline descriptions, cross-broker diff comparisons, and export
-- **AI assistant** — Optional AI-powered message explanation, DLQ root cause analysis, schema diff explanation, topic config advice, and cluster health summaries (bring your own API key — supports OpenAI, Anthropic, and Google)
+- **AI assistant** — Optional AI-powered message explanation, DLQ root cause analysis, schema diff explanation, topic config advice, and cluster health summaries (bring your own API key — supports OpenAI, Anthropic, and Google Gemini)
 - **Keyboard-first** — Command palette (⌘K), page shortcuts (⌘1-7), and full keyboard navigation
 - **Dark mode first** — Dense, readable interface designed for infrastructure tooling
-- **Demo mode** — Explore the full UI with realistic mock data, no Kafka cluster required
-
 ## Tech Stack
 
 - **Shell:** Electron 33 (macOS-optimized, `hiddenInset` title bar)
@@ -96,10 +94,6 @@ The app opens automatically. Changes to the React code hot-reload instantly. Cha
 > ```bash
 > unset ELECTRON_RUN_AS_NODE && npm run dev
 > ```
-
-### Demo mode
-
-If no Kafka cluster is reachable, the app automatically enters **demo mode** with realistic mock data — 15 topics, 9 consumer groups, 3 brokers, 8 schema subjects, DLQ messages with exception details, and more. This lets you explore every feature of the UI without any infrastructure.
 
 ---
 
@@ -198,10 +192,12 @@ kafkalens/
 │       │   ├── main/                  # Electron main process
 │       │   │   ├── index.ts           # App lifecycle, window creation
 │       │   │   ├── ipc-handlers.ts    # 43 IPC handlers across 9 domains
+│       │   │   ├── prompts/           # AI system prompts (editable)
+│       │   │   │   └── index.ts       # All AI prompt templates
 │       │   │   └── services/
 │       │   │       ├── kafka-service.ts    # KafkaJS wrapper (connections, topics, messages, groups, brokers)
 │       │   │       ├── schema-service.ts   # Confluent Schema Registry REST client
-│       │   │       ├── ai-service.ts       # Multi-provider AI (OpenAI, Anthropic, Google)
+│       │   │       ├── ai-service.ts       # Multi-provider AI (OpenAI, Anthropic, Google Gemini)
 │       │   │       └── store-service.ts    # SQLite persistence (clusters, favorites, settings)
 │       │   ├── preload/               # Context bridge — exposes typed IPC API to renderer
 │       │   └── renderer/              # React UI
@@ -209,7 +205,7 @@ kafkalens/
 │       │           ├── components/    # Layout (sidebar, status bar, command palette), shared UI
 │       │           ├── pages/         # 8 feature pages (Dashboard, Topics, Messages, etc.)
 │       │           ├── stores/        # Zustand stores (cluster, data, UI state)
-│       │           ├── lib/           # Mock data generators, utilities
+│       │           ├── lib/           # AI guard utility
 │       │           └── types/         # Shared TypeScript type definitions
 │       ├── electron.vite.config.ts    # Vite config for main, preload, and renderer
 │       └── package.json
@@ -241,6 +237,28 @@ kafkalens/
 
 ---
 
+## Current Status (v0.1)
+
+### Implemented
+
+All core features from the PRD are functional: cluster management, topic CRUD, message browsing with live tail, consumer group monitoring with offset reset, Schema Registry with diff viewer, DLQ dashboard with replay, broker config with cross-broker comparison, and AI-powered insights across all major views.
+
+### Known Gaps (Planned for Next Iteration)
+
+- **Partition Inspector page** — dedicated page for partition-level topology and health (PRD §4.7)
+- **Consumer lag trend chart** — per-group lag sampled over time with in-session charting (PRD §4.6)
+- **Natural language topic search** — AI-powered semantic search over topic list (PRD §5.2.6)
+- **Consumer lag anomaly detection** — background AI monitoring with notifications (PRD §5.2.5)
+- **Advanced message filtering UI** — timestamp range, key regex, value JSONPath filters (backend supports, UI pending)
+- **Seek to timestamp** — offset mode for seeking by timestamp (backend supports, UI pending)
+- **Produce from template** — save and reuse message templates (PRD §4.3)
+- **Schema search** — search across subjects and field names (PRD §4.5)
+- **Export consumer group offsets** — JSON/CSV export (PRD §4.6)
+- **macOS Keychain integration** — credentials currently stored in SQLite; Keychain migration pending (PRD §7.2)
+- **Config change history** — detect broker config changes since last inspection (PRD §4.8)
+
+---
+
 ## Troubleshooting
 
 ### `ELECTRON_RUN_AS_NODE` error
@@ -261,7 +279,7 @@ npx electron-rebuild -f -w better-sqlite3
 
 ### App starts but shows no data
 
-This is normal if no Kafka cluster is connected. The app starts in **demo mode** with mock data. To see real data, add and connect a cluster in Settings (⌘7).
+No Kafka cluster is connected. Add and connect a cluster in Settings (⌘7) to see live data.
 
 ### Connection test fails
 

@@ -211,7 +211,7 @@ function AIReviewModal({
             </div>
             <div>
               <h2 className="text-sm font-semibold text-text-primary">AI Config Review — {brokerLabel}</h2>
-              <p className="text-[11px] text-text-muted">Powered by OpenAI</p>
+              <p className="text-[11px] text-text-muted">AI-powered analysis</p>
             </div>
           </div>
           <button
@@ -462,7 +462,7 @@ export function BrokerConfig() {
                   isSelected={broker.id === selectedBrokerId}
                   onSelect={() => {
                     setSelectedBrokerId(broker.id)
-                    setAiAdvice(null)
+                    setAiModal((m) => ({ ...m, content: null }))
                   }}
                 />
               ))}

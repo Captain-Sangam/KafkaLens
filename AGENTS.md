@@ -27,12 +27,13 @@ Data flows: **Renderer → IPC invoke → Main process service → IPC response 
 |------|---------|
 | `src/main/services/kafka-service.ts` | KafkaJS wrapper — connections, topics, messages, consumer groups, brokers |
 | `src/main/services/schema-service.ts` | Confluent Schema Registry REST client |
-| `src/main/services/ai-service.ts` | Multi-provider AI (OpenAI, Anthropic, Google) via raw fetch |
+| `src/main/services/ai-service.ts` | Multi-provider AI (OpenAI, Anthropic, Google Gemini) via raw fetch |
 | `src/main/services/store-service.ts` | SQLite persistence — clusters, favorites, settings, DLQ reviews |
+| `src/main/prompts/index.ts` | AI system prompts — all prompt templates in one editable file |
 | `src/main/ipc-handlers.ts` | All 43 IPC handler registrations |
 | `src/renderer/src/stores/` | Zustand stores — clusterStore, dataStore, uiStore |
 | `src/renderer/src/pages/` | 8 feature pages |
-| `src/renderer/src/lib/mock-data.ts` | Demo mode mock data generators |
+| `src/renderer/src/lib/ai-guard.ts` | AI configuration check helper |
 | `src/renderer/src/types/index.ts` | Shared TypeScript type definitions |
 
 ## Conventions
@@ -49,7 +50,8 @@ Data flows: **Renderer → IPC invoke → Main process service → IPC response 
 - Functional components only. No class components.
 - Use Zustand stores for shared state, `useState` for local-only UI state.
 - Pages live in `src/renderer/src/pages/`. Layout and shared components in `src/renderer/src/components/`.
-- Pages should never import from `@/lib/mock-data` directly. Use `useDataStore` which handles demo mode fallback internally.
+- Pages define their own sub-components (modals, table rows, etc.) within the same file when they're page-specific. Extract to `components/` only when shared across multiple pages.
+- Data fetching goes through `useDataStore` which calls IPC methods on `window.api`.
 
 ### Styling
 
@@ -62,8 +64,8 @@ Data flows: **Renderer → IPC invoke → Main process service → IPC response 
 
 ### State Management
 
-- `clusterStore` — Cluster configs, connections, active cluster, demo mode flag. Persists to SQLite via IPC.
-- `dataStore` — All Kafka data (topics, messages, consumer groups, brokers, schemas, favorites). Handles demo mode fallback to mock data. All `fetch*` methods check `isDemoMode()`.
+- `clusterStore` — Cluster configs, connections, active cluster. Persists to SQLite via IPC.
+- `dataStore` — All Kafka data (topics, messages, consumer groups, brokers, schemas, favorites). All `fetch*` methods call `window.api` IPC and update store state on success.
 - `uiStore` — Navigation state, sidebar, command palette, notifications. Ephemeral.
 
 ### IPC Channels
@@ -75,9 +77,20 @@ Channels are namespaced: `domain:action` (e.g., `topics:list`, `messages:produce
 3. Add the type signature in `src/renderer/src/env.d.ts`
 4. Consume it in the appropriate store or page
 
-### Demo Mode
+### AI Prompts
 
-The app supports a "demo mode" that activates when no real Kafka cluster is connected or when the IPC bridge is unavailable (e.g., running the renderer standalone). Mock data in `lib/mock-data.ts` provides realistic topics, messages, consumer groups, schemas, and DLQ entries. The `dataStore` checks `clusterStore.demoMode` before each fetch and uses mock generators as a fallback.
+All AI system prompts are stored in `src/main/prompts/index.ts` as a `SYSTEM_PROMPTS` constant. This makes prompts easy to find, review, and edit without touching the AI service logic. The service imports prompts and pairs them with user context to form requests.
+
+The AI service (`ai-service.ts`) supports three providers:
+- **OpenAI** — uses `/v1/chat/completions` with `Authorization: Bearer` header
+- **Anthropic** — uses `/v1/messages` with `x-api-key` header and `anthropic-version`
+- **Google Gemini** — uses `generativelanguage.googleapis.com` with API key in query string
+
+When adding a new AI feature:
+1. Add the prompt to `src/main/prompts/index.ts`
+2. Add the method to `ai-service.ts` that assembles the user prompt and calls `this.chat()`
+3. Add the IPC handler in `ipc-handlers.ts`
+4. Wire through preload and `env.d.ts`
 
 ### Error Handling
 
@@ -112,10 +125,27 @@ Build artifacts are written to `apps/desktop/out/`. The renderer dev server runs
 | `zustand` | Lightweight state management | Renderer |
 | `lucide-react` | Icon library | Renderer |
 | `tailwindcss` v4 | Utility-first CSS with custom theme | Renderer |
+| `react-markdown` | Markdown rendering for AI responses | Renderer |
 
 ## Testing Guidance
 
-- When modifying IPC handlers or services, test with both a real Kafka cluster and in demo mode.
+- When modifying IPC handlers or services, test with a real Kafka cluster.
 - When modifying pages, verify loading skeletons appear and data populates correctly.
 - Destructive operations should always be tested against prod-labeled clusters to verify the double-confirmation flow.
 - AI features require a valid API key in Settings; test the "not configured" state as well.
+
+## Known Gaps (PRD Alignment)
+
+These features are specified in the PRD but not yet implemented:
+
+- **Partition Inspector page** (PRD §4.7) — backend `getPartitions()` exists, needs dedicated page
+- **Consumer lag trend chart** (PRD §4.6) — per-group lag over time with in-session sampling
+- **Natural language topic search** (PRD §5.2.6) — AI-powered semantic search
+- **Consumer lag anomaly detection** (PRD §5.2.5) — background AI monitoring
+- **Advanced message filter UI** — timestamp range, key regex, value JSONPath (backend supports)
+- **Seek to timestamp UI** — backend supports, needs offset mode button
+- **Produce from template** (PRD §4.3)
+- **Schema search across field names** (PRD §4.5)
+- **Export consumer group offsets** (PRD §4.6)
+- **macOS Keychain credential storage** (PRD §7.2) — currently SQLite
+- **Broker config change history** (PRD §4.8)

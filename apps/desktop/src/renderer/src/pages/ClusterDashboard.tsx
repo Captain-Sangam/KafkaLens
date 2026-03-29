@@ -93,7 +93,7 @@ function AIHealthModal({
             </div>
             <div>
               <h2 className="text-sm font-semibold text-text-primary">AI Health Summary</h2>
-              <p className="text-[11px] text-text-muted">Powered by OpenAI</p>
+              <p className="text-[11px] text-text-muted">AI-powered analysis</p>
             </div>
           </div>
           <button

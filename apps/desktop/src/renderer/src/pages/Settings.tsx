@@ -52,7 +52,23 @@ const ENV_DOT_COLORS: Record<EnvironmentLabel, string> = {
   prod: 'bg-red-500'
 }
 
-const DEFAULT_MODELS = ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo']
+const PROVIDER_OPTIONS: { value: AIProvider; label: string }[] = [
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'anthropic', label: 'Anthropic' },
+  { value: 'google', label: 'Google Gemini' }
+]
+
+const PROVIDER_MODELS: Record<AIProvider, string[]> = {
+  openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
+  anthropic: ['claude-sonnet-4-20250514', 'claude-3.5-sonnet', 'claude-3-haiku'],
+  google: ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash']
+}
+
+const PROVIDER_KEY_PLACEHOLDER: Record<AIProvider, string> = {
+  openai: 'sk-...',
+  anthropic: 'sk-ant-...',
+  google: 'AIza...'
+}
 
 const FONT_SIZE_MAP = { small: '13px', medium: '14px', large: '16px' } as const
 
@@ -570,10 +586,21 @@ function AISettingsForm({ settings, setSettings, showKey, setShowKey, savingAI, 
   const [fetchedModels, setFetchedModels] = useState<string[] | null>(null)
   const [fetchingModels, setFetchingModels] = useState(false)
 
-  const models = fetchedModels ?? DEFAULT_MODELS
+  const defaultModels = PROVIDER_MODELS[settings.provider]
+  const models = fetchedModels ?? defaultModels
+
+  function handleProviderChange(provider: AIProvider) {
+    setFetchedModels(null)
+    setSettings((s) => ({
+      ...s,
+      provider,
+      model: PROVIDER_MODELS[provider][0],
+      apiKey: s.provider === provider ? s.apiKey : ''
+    }))
+  }
 
   async function handleFetchModels() {
-    if (!settings.apiKey.trim()) return
+    if (!settings.apiKey.trim() || settings.provider !== 'openai') return
     setFetchingModels(true)
     try {
       const res = await fetch('https://api.openai.com/v1/models', {
@@ -601,17 +628,39 @@ function AISettingsForm({ settings, setSettings, showKey, setShowKey, savingAI, 
     }
   }
 
+  const providerLabel = PROVIDER_OPTIONS.find((p) => p.value === settings.provider)?.label ?? 'AI'
+
   return (
     <div className="space-y-4 rounded-lg border border-border bg-surface-1 p-5">
+      {/* Provider selector */}
+      <div className="space-y-1.5">
+        <label className="text-xs font-medium text-text-secondary">AI Provider</label>
+        <div className="flex gap-1 rounded-lg bg-surface-2 p-1">
+          {PROVIDER_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => handleProviderChange(opt.value)}
+              className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                settings.provider === opt.value
+                  ? 'bg-accent text-white shadow-sm'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* API Key */}
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-text-secondary">OpenAI API Key</label>
+        <label className="text-xs font-medium text-text-secondary">{providerLabel} API Key</label>
         <div className="relative">
           <input
             type={showKey ? 'text' : 'password'}
             value={settings.apiKey}
             onChange={(e) => setSettings((s) => ({ ...s, apiKey: e.target.value }))}
-            placeholder="sk-..."
+            placeholder={PROVIDER_KEY_PLACEHOLDER[settings.provider]}
             className={`${inputClasses} pr-10`}
           />
           <button
@@ -624,22 +673,24 @@ function AISettingsForm({ settings, setSettings, showKey, setShowKey, savingAI, 
         </div>
         <p className="flex items-center gap-1.5 text-[11px] text-text-muted">
           <Shield size={10} />
-          Your API key is stored securely in the system keychain
+          Your API key is stored locally in the application database
         </p>
       </div>
 
-      {/* Model — with fetch button */}
+      {/* Model — with fetch button for OpenAI */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <label className="text-xs font-medium text-text-secondary">Model</label>
-          <button
-            onClick={handleFetchModels}
-            disabled={fetchingModels || !settings.apiKey.trim()}
-            className="flex items-center gap-1 text-[11px] text-accent hover:text-accent-hover transition-colors disabled:opacity-40"
-          >
-            {fetchingModels ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
-            Fetch models
-          </button>
+          {settings.provider === 'openai' && (
+            <button
+              onClick={handleFetchModels}
+              disabled={fetchingModels || !settings.apiKey.trim()}
+              className="flex items-center gap-1 text-[11px] text-accent hover:text-accent-hover transition-colors disabled:opacity-40"
+            >
+              {fetchingModels ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+              Fetch models
+            </button>
+          )}
         </div>
         <select
           value={settings.model}

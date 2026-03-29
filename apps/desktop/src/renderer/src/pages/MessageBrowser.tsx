@@ -507,7 +507,12 @@ function MessageRow({
       const check = await checkAIConfigured()
       if (!check.ok) { setAiResponse(check.message!); return }
       const result = await window.api.ai.explainMessage(message.value, undefined)
-      setAiResponse(typeof result === 'string' ? result : result?.explanation ?? JSON.stringify(result))
+      if (result?.success && result.data) {
+        const data = result.data as string | { content: string }
+        setAiResponse(typeof data === 'string' ? data : data.content)
+      } else {
+        setAiResponse(result?.error ?? 'AI returned an empty response.')
+      }
     } catch (err) {
       setAiResponse(`Error: ${err instanceof Error ? err.message : 'Failed to get AI explanation'}`)
     } finally {
