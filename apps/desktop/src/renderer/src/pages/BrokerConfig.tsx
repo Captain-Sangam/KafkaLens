@@ -13,7 +13,6 @@ import {
 import { useClusterStore } from '@/stores/clusterStore'
 import { useDataStore } from '@/stores/dataStore'
 import { useUIStore } from '@/stores/uiStore'
-import { MOCK_BROKERS } from '@/lib/mock-data'
 import type { Broker } from '@/types'
 
 const CONFIG_DESCRIPTIONS: Record<string, string> = {
@@ -187,7 +186,7 @@ function CompareModal({
 }
 
 export function BrokerConfig() {
-  const { activeClusterId, demoMode } = useClusterStore()
+  const { activeClusterId } = useClusterStore()
   const { brokers, brokersLoading, fetchBrokers } = useDataStore()
   const addNotification = useUIStore((s) => s.addNotification)
 
@@ -213,27 +212,16 @@ export function BrokerConfig() {
     if (brokerConfigs[brokerId]) return
     setConfigLoading(true)
     try {
-      if (demoMode) {
-        await new Promise((r) => setTimeout(r, 200))
-        const mock = MOCK_BROKERS.find((b) => b.id === brokerId)
-        if (mock) {
-          setBrokerConfigs((prev) => ({ ...prev, [brokerId]: mock.configs }))
-        }
-        return
-      }
       const res = await window.api.brokers.config(activeClusterId!, brokerId)
       if (res.success && res.data) {
         setBrokerConfigs((prev) => ({ ...prev, [brokerId]: res.data! }))
       }
     } catch {
-      const fallback = MOCK_BROKERS.find((b) => b.id === brokerId)
-      if (demoMode && fallback) {
-        setBrokerConfigs((prev) => ({ ...prev, [brokerId]: fallback.configs }))
-      }
+      // failed to fetch broker config
     } finally {
       setConfigLoading(false)
     }
-  }, [activeClusterId, demoMode, brokerConfigs])
+  }, [activeClusterId, brokerConfigs])
 
   useEffect(() => {
     if (selectedBrokerId !== null) {
@@ -279,21 +267,6 @@ export function BrokerConfig() {
     setAiLoading(true)
     setAiAdvice(null)
     try {
-      if (demoMode) {
-        await new Promise((r) => setTimeout(r, 1500))
-        setAiAdvice(
-          `**Broker ${selectedBrokerId} Configuration Review**\n\n` +
-          `**Overall Assessment:** Configuration is generally well-tuned for a production workload.\n\n` +
-          `**Recommendations:**\n\n` +
-          `1. **log.retention.hours (168):** Consider if 7 days is appropriate for your use case. High-throughput topics may benefit from shorter retention with tiered storage.\n\n` +
-          `2. **min.insync.replicas (2):** Good setting with RF=3. This ensures strong durability guarantees.\n\n` +
-          `3. **num.io.threads (8):** May be undersized if running on storage-intensive workloads. Monitor disk I/O wait times and consider increasing to 12-16.\n\n` +
-          `4. **num.network.threads (3):** With high producer/consumer throughput, consider increasing to 6-8. Monitor network processor idle time.\n\n` +
-          `5. **compression.type (producer):** Good — lets producers choose their optimal compression. Verify clients use lz4 or zstd for best performance.\n\n` +
-          `**Divergence Alert:** \`message.max.bytes\` differs across brokers. Standardize to avoid unexpected producer failures.`,
-        )
-        return
-      }
       const res = await window.api.ai.adviseTopicConfig(currentConfig)
       if (res.success && res.data) {
         setAiAdvice(res.data.content)

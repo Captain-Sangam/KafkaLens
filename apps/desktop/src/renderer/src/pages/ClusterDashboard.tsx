@@ -13,8 +13,7 @@ import {
   CircleCheck,
   Sparkles,
   Loader2,
-  Unplug,
-  FlaskConical
+  Unplug
 } from 'lucide-react'
 import { useClusterStore } from '@/stores/clusterStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -67,7 +66,7 @@ function SkeletonRow() {
 
 export default function ClusterDashboard() {
   const { setCurrentPage, navigateToTopic } = useUIStore()
-  const { activeClusterId, demoMode, connections } = useClusterStore()
+  const { activeClusterId, connections } = useClusterStore()
   const {
     topics,
     consumerGroups,
@@ -193,12 +192,6 @@ export default function ClusterDashboard() {
         <div className="flex items-center gap-3">
           <LayoutDashboard className="h-6 w-6 text-accent" />
           <h1 className="text-xl font-semibold text-text-primary">Cluster Dashboard</h1>
-          {demoMode && (
-            <span className="flex items-center gap-1.5 rounded-full bg-warning/15 px-2.5 py-0.5 text-xs font-medium text-warning">
-              <FlaskConical className="h-3 w-3" />
-              Demo Mode
-            </span>
-          )}
         </div>
         <button
           onClick={handleAiHealthSummary}

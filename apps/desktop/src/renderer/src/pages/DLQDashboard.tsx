@@ -17,7 +17,6 @@ import {
 import { useClusterStore } from '@/stores/clusterStore'
 import { useDataStore } from '@/stores/dataStore'
 import { useUIStore } from '@/stores/uiStore'
-import { generateDLQMessages } from '@/lib/mock-data'
 import type { DLQMessage, Topic } from '@/types'
 
 function SummaryCard({
@@ -64,7 +63,7 @@ function ReplayToCustomModal({
 }) {
   const [targetTopic, setTargetTopic] = useState('')
   const [sending, setSending] = useState(false)
-  const { activeClusterId, demoMode } = useClusterStore()
+  const { activeClusterId } = useClusterStore()
   const { produceMessage } = useDataStore()
   const addNotification = useUIStore((s) => s.addNotification)
 
@@ -72,12 +71,6 @@ function ReplayToCustomModal({
     if (!targetTopic.trim()) return
     setSending(true)
     try {
-      if (demoMode) {
-        await new Promise((r) => setTimeout(r, 400))
-        addNotification('success', `Replayed message (offset ${message.offset}) to ${targetTopic}`)
-        onClose()
-        return
-      }
       const ok = await produceMessage(activeClusterId!, {
         topic: targetTopic,
         key: message.key,
@@ -141,7 +134,7 @@ function MessageDetail({
   message: DLQMessage
   onReviewed: (offset: string) => void
 }) {
-  const { activeClusterId, demoMode } = useClusterStore()
+  const { activeClusterId } = useClusterStore()
   const { produceMessage } = useDataStore()
   const addNotification = useUIStore((s) => s.addNotification)
   const [showCustomReplay, setShowCustomReplay] = useState(false)
@@ -164,12 +157,6 @@ function MessageDetail({
     }
     setReplayingOriginal(true)
     try {
-      if (demoMode) {
-        await new Promise((r) => setTimeout(r, 400))
-        addNotification('success', `Replayed message (offset ${message.offset}) to ${message.originalTopic}`)
-        setReplayingOriginal(false)
-        return
-      }
       const ok = await produceMessage(activeClusterId!, {
         topic: message.originalTopic,
         key: message.key,
@@ -191,13 +178,6 @@ function MessageDetail({
   const handleMarkReviewed = async () => {
     setMarkingReviewed(true)
     try {
-      if (demoMode) {
-        await new Promise((r) => setTimeout(r, 300))
-        onReviewed(message.offset)
-        addNotification('info', `Marked offset ${message.offset} as reviewed`)
-        setMarkingReviewed(false)
-        return
-      }
       const res = await window.api.dlq.markReviewed(
         activeClusterId!,
         message.topic,
@@ -221,21 +201,6 @@ function MessageDetail({
     setAiLoading(true)
     setAiAnalysis(null)
     try {
-      if (demoMode) {
-        await new Promise((r) => setTimeout(r, 1500))
-        setAiAnalysis(
-          `**Root Cause Analysis**\n\n` +
-          `**Exception:** ${shortenException(message.exceptionClass)}\n\n` +
-          `**Diagnosis:** ${message.exceptionMessage}\n\n` +
-          `**Likely Cause:** The message payload contains data that doesn't match the expected schema or the downstream service was unavailable during processing.\n\n` +
-          `**Recommended Actions:**\n` +
-          `1. Verify the message payload conforms to the expected schema version\n` +
-          `2. Check the health of dependent services at the time of failure\n` +
-          `3. If a schema migration occurred, ensure all consumers are updated\n` +
-          `4. Consider replaying this message after the root cause is fixed`,
-        )
-        return
-      }
       const res = await window.api.ai.analyzeDLQ(
         message.exceptionClass ?? '',
         message.exceptionMessage ?? '',
@@ -534,7 +499,7 @@ function DLQTopicRow({
 }
 
 export default function DLQDashboard() {
-  const { activeClusterId, demoMode } = useClusterStore()
+  const { activeClusterId } = useClusterStore()
   const { topics, messages: storeMessages, messagesLoading, fetchTopics, fetchMessages } = useDataStore()
   const addNotification = useUIStore((s) => s.addNotification)
 
@@ -551,11 +516,6 @@ export default function DLQDashboard() {
 
   const getDlqMessages = useCallback((topicName: string): DLQMessage[] => {
     if (localDlqMessages[topicName]) return localDlqMessages[topicName]
-    if (demoMode) {
-      const msgs = generateDLQMessages(topicName)
-      setLocalDlqMessages((prev) => ({ ...prev, [topicName]: msgs }))
-      return msgs
-    }
     const raw = storeMessages[topicName]
     if (raw) {
       return raw.map((m) => ({
@@ -570,7 +530,7 @@ export default function DLQDashboard() {
       })) as DLQMessage[]
     }
     return []
-  }, [localDlqMessages, demoMode, storeMessages])
+  }, [localDlqMessages, storeMessages])
 
   const handleToggleTopic = useCallback((topicName: string) => {
     if (expandedTopic === topicName) {
@@ -579,14 +539,10 @@ export default function DLQDashboard() {
     }
     setExpandedTopic(topicName)
 
-    if (demoMode) {
-      if (!localDlqMessages[topicName]) {
-        setLocalDlqMessages((prev) => ({ ...prev, [topicName]: generateDLQMessages(topicName) }))
-      }
-    } else if (activeClusterId && !storeMessages[topicName]) {
+    if (activeClusterId && !storeMessages[topicName]) {
       fetchMessages(activeClusterId, topicName, { limit: 50 })
     }
-  }, [expandedTopic, demoMode, activeClusterId, localDlqMessages, storeMessages, fetchMessages])
+  }, [expandedTopic, activeClusterId, storeMessages, fetchMessages])
 
   const handleReviewed = useCallback((topicName: string, offset: string) => {
     setLocalDlqMessages((prev) => {
@@ -624,19 +580,14 @@ export default function DLQDashboard() {
       setBulkProgress({ current: i + 1, total: unreviewed.length })
 
       try {
-        if (demoMode) {
-          await new Promise((r) => setTimeout(r, 100))
-          successCount++
-        } else {
-          const { produceMessage } = useDataStore.getState()
-          const ok = await produceMessage(activeClusterId!, {
-            topic: msg.originalTopic!,
-            key: msg.key,
-            value: msg.value,
-            headers: msg.headers,
-          })
-          if (ok) successCount++
-        }
+        const { produceMessage } = useDataStore.getState()
+        const ok = await produceMessage(activeClusterId!, {
+          topic: msg.originalTopic!,
+          key: msg.key,
+          value: msg.value,
+          headers: msg.headers,
+        })
+        if (ok) successCount++
       } catch {
         // continue with next message
       }

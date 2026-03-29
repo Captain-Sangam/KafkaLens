@@ -75,7 +75,7 @@ function SkeletonRow() {
 
 export default function MessageBrowser() {
   const { selectedTopicName, addNotification } = useUIStore()
-  const { activeClusterId, demoMode } = useClusterStore()
+  const { activeClusterId } = useClusterStore()
   const { messages, messagesLoading, fetchMessages, produceMessage } = useDataStore()
 
   const [pageSize, setPageSize] = useState<number>(50)
@@ -272,7 +272,6 @@ export default function MessageBrowser() {
         <ProduceMessageModal
           topic={selectedTopicName}
           clusterId={activeClusterId!}
-          demoMode={demoMode}
           onClose={() => setShowProduceModal(false)}
           onProduce={produceMessage}
           addNotification={addNotification}
@@ -286,7 +285,6 @@ export default function MessageBrowser() {
 function ProduceMessageModal({
   topic,
   clusterId,
-  demoMode,
   onClose,
   onProduce,
   addNotification,
@@ -294,7 +292,6 @@ function ProduceMessageModal({
 }: {
   topic: string
   clusterId: string
-  demoMode: boolean
   onClose: () => void
   onProduce: (clusterId: string, opts: {
     topic: string
@@ -344,7 +341,7 @@ function ProduceMessageModal({
       })
 
       if (success) {
-        addNotification('success', `Message produced to ${topic}${demoMode ? ' (demo mode)' : ''}`)
+        addNotification('success', `Message produced to ${topic}`)
         onClose()
         onRefresh()
       } else {

@@ -13,7 +13,6 @@ import {
 import { useClusterStore } from '@/stores/clusterStore'
 import { useDataStore } from '@/stores/dataStore'
 import { useUIStore } from '@/stores/uiStore'
-import { MOCK_SCHEMA_SUBJECTS, getMockSchemaVersion } from '@/lib/mock-data'
 import type { SchemaSubject, SchemaVersion } from '@/types'
 
 const TYPE_STYLES: Record<SchemaSubject['schemaType'], string> = {
@@ -103,7 +102,7 @@ function RegisterSchemaModal({
   const [schemaType, setSchemaType] = useState<'AVRO' | 'PROTOBUF' | 'JSON'>('AVRO')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const { activeClusterId, demoMode } = useClusterStore()
+  const { activeClusterId } = useClusterStore()
   const addNotification = useUIStore((s) => s.addNotification)
 
   const handleSubmit = async () => {
@@ -115,14 +114,6 @@ function RegisterSchemaModal({
     setError(null)
 
     try {
-      if (demoMode) {
-        await new Promise((r) => setTimeout(r, 500))
-        addNotification('success', `Registered new version for ${subject}`)
-        onRegistered()
-        onClose()
-        return
-      }
-
       const res = await window.api.schema.register(activeClusterId!, subject, schemaText, schemaType)
       if (res.success) {
         addNotification('success', `Registered new version (id: ${res.data?.id}) for ${subject}`)
@@ -218,20 +209,12 @@ function DeleteVersionDialog({
   onDeleted: () => void
 }) {
   const [deleting, setDeleting] = useState(false)
-  const { activeClusterId, demoMode } = useClusterStore()
+  const { activeClusterId } = useClusterStore()
   const addNotification = useUIStore((s) => s.addNotification)
 
   const handleDelete = async () => {
     setDeleting(true)
     try {
-      if (demoMode) {
-        await new Promise((r) => setTimeout(r, 400))
-        addNotification('success', `Deleted version ${version} of ${subject}`)
-        onDeleted()
-        onClose()
-        return
-      }
-
       const res = await window.api.schema.deleteVersion(activeClusterId!, subject, version)
       if (res.success) {
         addNotification('success', `Deleted version ${version} of ${subject}`)
@@ -280,7 +263,7 @@ function SchemaDetail({
   subject: SchemaSubject
   onRefresh: () => void
 }) {
-  const { activeClusterId, demoMode } = useClusterStore()
+  const { activeClusterId } = useClusterStore()
   const addNotification = useUIStore((s) => s.addNotification)
 
   const [versions, setVersions] = useState<number[]>(subject.versions)
@@ -295,52 +278,37 @@ function SchemaDetail({
   const [aiLoading, setAiLoading] = useState(false)
 
   const fetchVersions = useCallback(async () => {
-    if (demoMode) {
-      const mock = MOCK_SCHEMA_SUBJECTS.find((s) => s.subject === subject.subject)
-      setVersions(mock?.versions ?? subject.versions)
-      return
-    }
     try {
       const res = await window.api.schema.versions(activeClusterId!, subject.subject)
       if (res.success && res.data) setVersions(res.data)
     } catch {
       // keep existing versions
     }
-  }, [activeClusterId, demoMode, subject.subject, subject.versions])
+  }, [activeClusterId, subject.subject, subject.versions])
 
   const fetchSchema = useCallback(async (version: number) => {
     setLoadingSchema(true)
     try {
-      if (demoMode) {
-        await new Promise((r) => setTimeout(r, 150))
-        setSchema(getMockSchemaVersion(subject.subject, version))
-        setLoadingSchema(false)
-        return
-      }
       const res = await window.api.schema.get(activeClusterId!, subject.subject, version)
       if (res.success && res.data) {
         setSchema(res.data as SchemaVersion)
       }
     } catch {
-      if (demoMode) setSchema(getMockSchemaVersion(subject.subject, version))
+      // failed to fetch schema
     } finally {
       setLoadingSchema(false)
     }
-  }, [activeClusterId, demoMode, subject.subject])
+  }, [activeClusterId, subject.subject])
 
   const fetchPrevSchema = useCallback(async (version: number) => {
     if (version <= 1) { setPrevSchema(null); return }
     try {
-      if (demoMode) {
-        setPrevSchema(getMockSchemaVersion(subject.subject, version - 1))
-        return
-      }
       const res = await window.api.schema.get(activeClusterId!, subject.subject, version - 1)
       if (res.success && res.data) setPrevSchema(res.data as SchemaVersion)
     } catch {
-      if (demoMode) setPrevSchema(getMockSchemaVersion(subject.subject, version - 1))
+      // failed to fetch previous schema
     }
-  }, [activeClusterId, demoMode, subject.subject])
+  }, [activeClusterId, subject.subject])
 
   useEffect(() => {
     fetchVersions()
@@ -359,18 +327,6 @@ function SchemaDetail({
     setAiLoading(true)
     setAiExplanation(null)
     try {
-      if (demoMode) {
-        await new Promise((r) => setTimeout(r, 1200))
-        setAiExplanation(
-          `**Schema Diff Analysis for ${subject.subject}**\n\n` +
-          `Version ${prevSchema.version} → ${schema.version}:\n\n` +
-          `• New optional field \`metadata\` added (backward compatible)\n` +
-          `• The field uses a union type [\`null\`, \`map<string>\`] with a null default, ensuring existing consumers won't break\n` +
-          `• This change follows BACKWARD compatibility — old readers can ignore the new field\n\n` +
-          `**Risk Assessment:** Low — this is a safe additive change.`
-        )
-        return
-      }
       const res = await window.api.ai.explainSchemaDiff(subject.subject, prevSchema.schema, schema.schema)
       if (res.success && res.data) {
         setAiExplanation(res.data.content)

@@ -11,9 +11,7 @@ import {
   ChevronDown,
   Plug,
   Unplug,
-  Loader2,
-  PanelLeftClose,
-  PanelLeft
+  Loader2
 } from 'lucide-react'
 import { useUIStore } from '@/stores/uiStore'
 import { useClusterStore } from '@/stores/clusterStore'
@@ -42,7 +40,7 @@ const STATUS_COLORS: Record<ConnectionStatus, string> = {
 }
 
 export function Sidebar() {
-  const { currentPage, setCurrentPage, selectedTopicName, sidebarCollapsed, toggleSidebar } =
+  const { currentPage, setCurrentPage, selectedTopicName, sidebarCollapsed } =
     useUIStore()
   const { clusters, activeClusterId, connections, setActiveCluster, connectCluster, disconnectCluster } =
     useClusterStore()
@@ -103,23 +101,8 @@ export function Sidebar() {
         sidebarCollapsed ? 'w-14' : 'w-[220px]'
       }`}
     >
-      {/* Draggable title bar region */}
-      <div className="drag-region flex h-10 shrink-0 items-center justify-between px-3">
-        {!sidebarCollapsed && (
-          <span className="no-drag text-xs font-semibold tracking-wider text-text-muted uppercase">
-            KafkaLens
-          </span>
-        )}
-        <button
-          onClick={toggleSidebar}
-          className="no-drag flex h-6 w-6 items-center justify-center rounded text-text-muted transition-colors hover:bg-surface-3 hover:text-text-secondary"
-        >
-          {sidebarCollapsed ? <PanelLeft size={14} /> : <PanelLeftClose size={14} />}
-        </button>
-      </div>
-
       {/* Cluster selector */}
-      <div className="relative px-2 pb-2" ref={dropdownRef}>
+      <div className="relative px-2 pb-2 pt-2" ref={dropdownRef}>
         <button
           onClick={() => setClusterDropdownOpen((prev) => !prev)}
           className={`no-drag flex w-full items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-left transition-colors hover:border-border-bright hover:bg-surface-2 ${
