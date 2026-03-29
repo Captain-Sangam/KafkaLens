@@ -1,0 +1,22 @@
+{
+  "name": "kafkalens",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open-source Kafka desktop client for inspecting, debugging, and managing Apache Kafka clusters",
+  "author": "KafkaLens Contributors",
+  "license": "Apache-2.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w apps/desktop",
+    "build": "npm run build -w apps/desktop",
+    "preview": "npm run preview -w apps/desktop",
+    "lint": "eslint . --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

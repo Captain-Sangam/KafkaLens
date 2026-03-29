@@ -1,0 +1,11 @@
+{
+  "name": "@kafkalens/ai-layer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI provider integration for KafkaLens (OpenAI, Anthropic, Google)",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  }
+}
