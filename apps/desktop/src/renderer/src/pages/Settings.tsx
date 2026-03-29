@@ -35,7 +35,7 @@ const AUTH_OPTIONS: { value: AuthMethod; label: string }[] = [
   { value: 'sasl-plain', label: 'SASL/PLAIN' },
   { value: 'sasl-scram-256', label: 'SASL/SCRAM-256' },
   { value: 'sasl-scram-512', label: 'SASL/SCRAM-512' },
-  { value: 'ssl', label: 'SSL/TLS' }
+  { value: 'ssl', label: 'SSL Client Certificate' }
 ]
 
 const ENV_OPTIONS: { value: EnvironmentLabel; label: string }[] = [
@@ -90,6 +90,8 @@ interface ClusterFormState {
   bootstrapServers: string
   environmentLabel: EnvironmentLabel
   authMethod: AuthMethod
+  ssl: boolean
+  sslRejectUnauthorized: boolean
   username: string
   password: string
   schemaRegistryUrl: string
@@ -100,6 +102,8 @@ const EMPTY_FORM: ClusterFormState = {
   bootstrapServers: '',
   environmentLabel: 'local',
   authMethod: 'none',
+  ssl: false,
+  sslRejectUnauthorized: true,
   username: '',
   password: '',
   schemaRegistryUrl: ''
@@ -119,7 +123,7 @@ function SectionHeader({ icon: Icon, title }: { icon: React.ElementType; title: 
 // ---------------------------------------------------------------------------
 
 function ClusterManagementSection() {
-  const { clusters, addCluster, updateCluster, removeCluster, testConnection } = useClusterStore()
+  const { clusters, activeClusterId, addCluster, updateCluster, removeCluster, testConnection, connectCluster } = useClusterStore()
   const addNotification = useUIStore((s) => s.addNotification)
 
   const [showForm, setShowForm] = useState(false)
@@ -145,6 +149,8 @@ function ClusterManagementSection() {
       name: form.name,
       bootstrapServers: form.bootstrapServers,
       authMethod: form.authMethod,
+      ssl: form.ssl,
+      sslRejectUnauthorized: form.sslRejectUnauthorized,
       environmentLabel: form.environmentLabel,
       colorTag: ENV_DOT_COLORS[form.environmentLabel],
       schemaRegistryUrl: form.schemaRegistryUrl || undefined,
@@ -190,6 +196,9 @@ function ClusterManagementSection() {
         const { id: _, createdAt: __, ...updates } = config
         await updateCluster(editingId, updates)
         addNotification('success', `Cluster "${config.name}" updated`)
+        if (editingId === activeClusterId) {
+          connectCluster(editingId)
+        }
       } else {
         await addCluster(config)
         addNotification('success', `Cluster "${config.name}" added`)
@@ -216,6 +225,8 @@ function ClusterManagementSection() {
       bootstrapServers: cluster.bootstrapServers,
       environmentLabel: cluster.environmentLabel,
       authMethod: cluster.authMethod,
+      ssl: cluster.ssl ?? false,
+      sslRejectUnauthorized: cluster.sslRejectUnauthorized ?? true,
       username: cluster.username ?? '',
       password: cluster.password ?? '',
       schemaRegistryUrl: cluster.schemaRegistryUrl ?? ''
@@ -265,6 +276,8 @@ function ClusterManagementSection() {
             name: item.name,
             bootstrapServers: item.bootstrapServers,
             authMethod: item.authMethod ?? 'none',
+            ssl: item.ssl ?? false,
+            sslRejectUnauthorized: item.sslRejectUnauthorized ?? true,
             environmentLabel: item.environmentLabel ?? 'local',
             colorTag: ENV_DOT_COLORS[item.environmentLabel as EnvironmentLabel] ?? ENV_DOT_COLORS.local,
             schemaRegistryUrl: item.schemaRegistryUrl,
@@ -449,6 +462,53 @@ function ClusterManagementSection() {
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="col-span-2 space-y-2">
+              <div className="flex items-center justify-between rounded-lg border border-border bg-surface-2 px-3 py-2.5">
+                <div>
+                  <div className="text-sm text-text-primary">SSL/TLS</div>
+                  <div className="text-[11px] text-text-muted">Encrypt broker connections</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, ssl: !f.ssl }))}
+                  className={`relative h-5 w-9 rounded-full transition-colors ${
+                    form.ssl ? 'bg-accent' : 'bg-surface-4'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                      form.ssl ? 'translate-x-4' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+              {form.ssl && (
+                <div className="flex items-center justify-between rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5">
+                  <div>
+                    <div className="text-sm text-text-primary">Skip TLS verification</div>
+                    <div className="text-[11px] text-text-muted">
+                      Required for port-forwarded or self-signed connections
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setForm((f) => ({ ...f, sslRejectUnauthorized: !f.sslRejectUnauthorized }))
+                    }
+                    className={`relative h-5 w-9 rounded-full transition-colors ${
+                      !form.sslRejectUnauthorized ? 'bg-warning' : 'bg-surface-4'
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                        !form.sslRejectUnauthorized ? 'translate-x-4' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+              )}
             </div>
 
             {isSasl && (

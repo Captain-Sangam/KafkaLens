@@ -9,6 +9,8 @@ import { readFileSync } from 'fs'
 export interface ClusterConnectionConfig {
   bootstrapServers: string
   authMethod: 'none' | 'sasl-plain' | 'sasl-scram-256' | 'sasl-scram-512' | 'ssl'
+  ssl?: boolean
+  sslRejectUnauthorized?: boolean
   username?: string
   password?: string
   sslCertPath?: string
@@ -30,8 +32,21 @@ export interface TopicInfo {
   retentionBytes: number
   cleanupPolicy: string
   isInternal: boolean
+  isDLQ: boolean
   configs: Record<string, string>
   underReplicatedPartitions: number
+}
+
+const DLQ_PATTERNS = [
+  /[.\-_]dlq([.\-_]|$)/i,
+  /[.\-_]dlt([.\-_]|$)/i,
+  /[.\-_]retry([.\-_]|$)/i,
+  /[.\-_]error([.\-_]|$)/i,
+  /dead[.\-_]?letter/i,
+]
+
+function isDLQTopic(name: string): boolean {
+  return DLQ_PATTERNS.some((p) => p.test(name))
 }
 
 export interface TopicMetadata {
@@ -238,24 +253,47 @@ class KafkaService {
       configByTopic.set(res.resourceName, map)
     }
 
+    const OFFSET_TIMEOUT_MS = 3_000
+    const OFFSET_BATCH_SIZE = 10
+
+    async function fetchOffsetsWithTimeout(
+      adm: Admin,
+      topic: string
+    ): Promise<number> {
+      try {
+        const result = await Promise.race([
+          adm.fetchTopicOffsets(topic),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), OFFSET_TIMEOUT_MS))
+        ])
+        if (!result) return 0
+        let count = 0
+        for (const po of result) {
+          const high = parseInt(po.high, 10) || 0
+          const low = parseInt(po.low, 10) || 0
+          count += high - low
+        }
+        return count
+      } catch {
+        return 0
+      }
+    }
+
+    const offsetByTopic = new Map<string, number>()
+    const topicList = metadata.topics.map((t) => t.name)
+    for (let i = 0; i < topicList.length; i += OFFSET_BATCH_SIZE) {
+      const batch = topicList.slice(i, i + OFFSET_BATCH_SIZE)
+      const counts = await Promise.all(
+        batch.map((name) => fetchOffsetsWithTimeout(admin, name))
+      )
+      batch.forEach((name, idx) => offsetByTopic.set(name, counts[idx]))
+    }
+
     const results: TopicInfo[] = []
 
     for (const topicMeta of metadata.topics) {
       const configs = configByTopic.get(topicMeta.name) ?? {}
 
-      let messageCount = 0
       let underReplicated = 0
-      try {
-        const offsets = await admin.fetchTopicOffsets(topicMeta.name)
-        for (const po of offsets) {
-          const high = parseInt(po.high, 10) || 0
-          const low = parseInt(po.low, 10) || 0
-          messageCount += high - low
-        }
-      } catch {
-        /* offset fetch may fail for empty topics */
-      }
-
       for (const p of topicMeta.partitions) {
         if (p.isr.length < p.replicas.length) {
           underReplicated++
@@ -271,11 +309,12 @@ class KafkaService {
         name: topicMeta.name,
         partitions: topicMeta.partitions.length,
         replicationFactor,
-        messageCount,
+        messageCount: offsetByTopic.get(topicMeta.name) ?? 0,
         retentionMs: parseInt(configs['retention.ms'] ?? '-1', 10),
         retentionBytes: parseInt(configs['retention.bytes'] ?? '-1', 10),
         cleanupPolicy: configs['cleanup.policy'] ?? 'delete',
         isInternal: topicMeta.name.startsWith('__'),
+        isDLQ: isDLQTopic(topicMeta.name),
         configs,
         underReplicatedPartitions: underReplicated
       })
@@ -839,25 +878,31 @@ class KafkaService {
         username: config.username ?? '',
         password: config.password ?? ''
       }
-      kafkaConfig.ssl = true
     } else if (config.authMethod === 'sasl-scram-256') {
       kafkaConfig.sasl = {
         mechanism: 'scram-sha-256',
         username: config.username ?? '',
         password: config.password ?? ''
       }
-      kafkaConfig.ssl = true
     } else if (config.authMethod === 'sasl-scram-512') {
       kafkaConfig.sasl = {
         mechanism: 'scram-sha-512',
         username: config.username ?? '',
         password: config.password ?? ''
       }
-      kafkaConfig.ssl = true
-    } else if (config.authMethod === 'ssl') {
-      kafkaConfig.ssl = config.sslCertPath
-        ? { ca: [readFileSync(config.sslCertPath, 'utf-8')] }
-        : true
+    }
+
+    const wantsSsl = config.ssl === true || config.authMethod === 'ssl'
+    if (wantsSsl) {
+      const rejectUnauthorized = config.sslRejectUnauthorized !== false
+      if (config.sslCertPath) {
+        kafkaConfig.ssl = {
+          rejectUnauthorized,
+          ca: [readFileSync(config.sslCertPath, 'utf-8')]
+        }
+      } else {
+        kafkaConfig.ssl = { rejectUnauthorized }
+      }
     }
 
     return new Kafka(kafkaConfig)

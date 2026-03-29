@@ -6,6 +6,8 @@ export interface ClusterConfig {
   name: string
   bootstrapServers: string
   authMethod: AuthMethod
+  ssl?: boolean
+  sslRejectUnauthorized?: boolean
   username?: string
   password?: string
   sslCertPath?: string

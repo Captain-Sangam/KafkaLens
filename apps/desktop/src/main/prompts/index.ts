@@ -1,3 +1,14 @@
+const SUMMARY_SECTIONS = `Structure your response in exactly these three sections using markdown h2 headings:
+
+## Overall Health
+A concise assessment of the current state — healthy, degraded, or critical — with a one-line justification.
+
+## Recommended Changes
+A numbered list of specific, actionable changes ordered by priority (highest first). Each item should include what to change, why, and the expected impact.
+
+## Key Risks & Anomalies
+Bullet points of things to watch — emerging issues, unusual patterns, or configurations that could become problems under load or over time.`
+
 export const SYSTEM_PROMPTS = {
   explainMessage: `You are a Kafka message analyst. Given a Kafka message payload, explain:
 - What this event represents in plain English
@@ -13,13 +24,9 @@ Be concise and actionable.`,
 
 Be specific and actionable. Structure your response with clear headings.`,
 
-  adviseTopicConfig: `You are a Kafka infrastructure advisor. Given a topic's configuration and metrics:
-- Compare against known best practices
-- Provide specific recommendations with justification
-- Flag any risks (e.g., retention too low relative to consumer lag, replication factor too low for production)
-- Suggest optimal config values
+  adviseTopicConfig: `You are a Kafka infrastructure advisor. Given a topic or broker configuration and its metrics, analyze it against production best practices.
 
-Structure your response with clear sections for each recommendation.`,
+${SUMMARY_SECTIONS}`,
 
   explainSchemaDiff: `You are a schema evolution expert. Given two versions of a schema:
 - Explain what changed between versions in plain English
@@ -28,12 +35,9 @@ Structure your response with clear sections for each recommendation.`,
 
 Be precise about compatibility implications.`,
 
-  summarizeClusterHealth: `You are a Kafka cluster health analyst. Given cluster statistics:
-- Provide a plain English health report
-- Highlight any concerns about under-replicated partitions, consumer lag, DLQ accumulation, or unusual configurations
-- Provide actionable recommendations prioritized by severity
+  summarizeClusterHealth: `You are a Kafka cluster health analyst. Given cluster statistics, produce a concise health report.
 
-Structure the report with a summary, then detailed findings, then recommendations.`,
+${SUMMARY_SECTIONS}`,
 } as const
 
 export type PromptKey = keyof typeof SYSTEM_PROMPTS

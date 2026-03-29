@@ -7,6 +7,8 @@ interface ClusterRow {
   name: string
   bootstrapServers: string
   authMethod: string
+  ssl: boolean
+  sslRejectUnauthorized: boolean
   username?: string
   password?: string
   sslCertPath?: string
@@ -33,6 +35,8 @@ CREATE TABLE IF NOT EXISTS clusters (
   name TEXT NOT NULL,
   bootstrap_servers TEXT NOT NULL,
   auth_method TEXT NOT NULL DEFAULT 'none',
+  ssl INTEGER NOT NULL DEFAULT 0,
+  ssl_reject_unauthorized INTEGER NOT NULL DEFAULT 1,
   username TEXT,
   password TEXT,
   ssl_cert_path TEXT,
@@ -75,6 +79,18 @@ class StoreService {
     this.db = new Database(dbPath)
     this.db.pragma('journal_mode = WAL')
     this.db.exec(SCHEMA_SQL)
+    this.migrate()
+  }
+
+  private migrate(): void {
+    const cols = this.db.pragma('table_info(clusters)') as { name: string }[]
+    const colNames = new Set(cols.map((c) => c.name))
+    if (!colNames.has('ssl')) {
+      this.db.exec('ALTER TABLE clusters ADD COLUMN ssl INTEGER NOT NULL DEFAULT 0')
+    }
+    if (!colNames.has('ssl_reject_unauthorized')) {
+      this.db.exec('ALTER TABLE clusters ADD COLUMN ssl_reject_unauthorized INTEGER NOT NULL DEFAULT 1')
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -101,6 +117,8 @@ class StoreService {
       name: cluster.name,
       bootstrapServers: cluster.bootstrapServers,
       authMethod: cluster.authMethod ?? 'none',
+      ssl: cluster.ssl ? 1 : 0,
+      sslRejectUnauthorized: cluster.sslRejectUnauthorized === false ? 0 : 1,
       username: cluster.username ?? null,
       password: cluster.password ?? null,
       sslCertPath: cluster.sslCertPath ?? null,
@@ -115,12 +133,12 @@ class StoreService {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO clusters (
-          id, name, bootstrap_servers, auth_method,
+          id, name, bootstrap_servers, auth_method, ssl, ssl_reject_unauthorized,
           username, password, ssl_cert_path,
           schema_registry_url, schema_registry_username, schema_registry_password,
           environment_label, color_tag, created_at, updated_at
         ) VALUES (
-          @id, @name, @bootstrapServers, @authMethod,
+          @id, @name, @bootstrapServers, @authMethod, @ssl, @sslRejectUnauthorized,
           @username, @password, @sslCertPath,
           @schemaRegistryUrl, @schemaRegistryUsername, @schemaRegistryPassword,
           @environmentLabel, @colorTag, @createdAt, @updatedAt
@@ -138,6 +156,10 @@ class StoreService {
       name: updates.name ?? current.name,
       bootstrapServers: updates.bootstrapServers ?? current.bootstrapServers,
       authMethod: updates.authMethod ?? current.authMethod,
+      ssl: updates.ssl !== undefined ? (updates.ssl ? 1 : 0) : (current.ssl ? 1 : 0),
+      sslRejectUnauthorized: updates.sslRejectUnauthorized !== undefined
+        ? (updates.sslRejectUnauthorized === false ? 0 : 1)
+        : (current.sslRejectUnauthorized ? 1 : 0),
       username: updates.username ?? current.username ?? null,
       password: updates.password ?? current.password ?? null,
       sslCertPath: updates.sslCertPath ?? current.sslCertPath ?? null,
@@ -155,6 +177,8 @@ class StoreService {
           name = @name,
           bootstrap_servers = @bootstrapServers,
           auth_method = @authMethod,
+          ssl = @ssl,
+          ssl_reject_unauthorized = @sslRejectUnauthorized,
           username = @username,
           password = @password,
           ssl_cert_path = @sslCertPath,
@@ -286,6 +310,8 @@ class StoreService {
       name: row.name as string,
       bootstrapServers: row.bootstrap_servers as string,
       authMethod: row.auth_method as string,
+      ssl: !!(row.ssl as number),
+      sslRejectUnauthorized: (row.ssl_reject_unauthorized as number) !== 0,
       username: row.username as string | undefined,
       password: row.password as string | undefined,
       sslCertPath: row.ssl_cert_path as string | undefined,

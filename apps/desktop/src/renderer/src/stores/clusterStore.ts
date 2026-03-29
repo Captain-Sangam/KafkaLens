@@ -115,14 +115,16 @@ export const useClusterStore = create<ClusterStore>((set, get) => ({
 
     try {
       const res = await window.api.cluster.connect(id, cluster)
-      if (res.success && res.data) {
+      const inner = res.data as { success?: boolean; brokerCount?: number; kafkaVersion?: string; error?: string } | undefined
+      if (res.success && inner?.success) {
         setStatus('connected', {
-          brokerCount: res.data.brokerCount,
-          kafkaVersion: res.data.kafkaVersion
+          brokerCount: inner.brokerCount,
+          kafkaVersion: inner.kafkaVersion
         })
         set({ activeClusterId: id })
       } else {
-        setStatus('error', { error: res.error ?? 'Connection failed' })
+        const errorMsg = inner?.error ?? res.error ?? 'Connection failed'
+        setStatus('error', { error: errorMsg })
       }
     } catch (err) {
       setStatus('error', { error: err instanceof Error ? err.message : 'Connection failed' })
@@ -154,14 +156,15 @@ export const useClusterStore = create<ClusterStore>((set, get) => ({
   testConnection: async (config) => {
     try {
       const res = await window.api.cluster.testConnection(config)
-      if (res.success && res.data) {
+      const inner = res.data as { success?: boolean; brokerCount?: number; kafkaVersion?: string; error?: string } | undefined
+      if (res.success && inner?.success) {
         return {
           success: true,
-          brokerCount: res.data.brokerCount,
-          kafkaVersion: res.data.kafkaVersion
+          brokerCount: inner.brokerCount,
+          kafkaVersion: inner.kafkaVersion
         }
       }
-      return { success: false, error: res.error ?? 'Connection test failed' }
+      return { success: false, error: inner?.error ?? res.error ?? 'Connection test failed' }
     } catch (err) {
       return {
         success: false,

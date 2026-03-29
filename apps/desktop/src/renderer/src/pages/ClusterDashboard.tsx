@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, lazy, Suspense } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import {
   LayoutDashboard,
   Database,
@@ -14,17 +14,12 @@ import {
   Loader2,
   Unplug,
   X,
-  CheckCircle2,
-  AlertOctagon,
-  TrendingUp,
-  Shield
 } from 'lucide-react'
+import { AIMarkdown } from '@/components/common/AIMarkdown'
 import { useClusterStore } from '@/stores/clusterStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useDataStore } from '@/stores/dataStore'
 import type { ConsumerGroupState } from '@/types'
-
-const Markdown = lazy(() => import('react-markdown'))
 
 const STATE_STYLES: Record<ConsumerGroupState, { bg: string; text: string }> = {
   Stable: { bg: 'bg-success/15', text: 'text-success' },
@@ -112,59 +107,7 @@ function AIHealthModal({
               <p className="text-sm text-text-secondary">Analyzing cluster health...</p>
             </div>
           ) : content ? (
-            <Suspense fallback={<p className="text-sm text-text-secondary whitespace-pre-wrap">{content}</p>}>
-              <div className="prose-kafkalens">
-                <Markdown
-                  components={{
-                    h1: ({ children }) => (
-                      <h1 className="mb-3 mt-1 flex items-center gap-2 text-lg font-bold text-text-primary">
-                        <Shield className="h-5 w-5 text-accent" />
-                        {children}
-                      </h1>
-                    ),
-                    h2: ({ children }) => (
-                      <h2 className="mb-2 mt-5 text-sm font-semibold text-text-primary border-b border-border pb-1.5">{children}</h2>
-                    ),
-                    h3: ({ children }) => (
-                      <h3 className="mb-1.5 mt-3 text-xs font-semibold text-text-primary">{children}</h3>
-                    ),
-                    p: ({ children }) => (
-                      <p className="mb-3 text-sm leading-relaxed text-text-secondary">{children}</p>
-                    ),
-                    ul: ({ children }) => (
-                      <ul className="mb-3 ml-1 space-y-1.5">{children}</ul>
-                    ),
-                    ol: ({ children }) => (
-                      <ol className="mb-3 ml-1 space-y-1.5 list-decimal list-inside">{children}</ol>
-                    ),
-                    li: ({ children }) => (
-                      <li className="flex items-start gap-2 text-sm text-text-secondary">
-                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
-                        <span>{children}</span>
-                      </li>
-                    ),
-                    strong: ({ children }) => (
-                      <strong className="font-semibold text-text-primary">{children}</strong>
-                    ),
-                    em: ({ children }) => (
-                      <em className="text-warning">{children}</em>
-                    ),
-                    code: ({ children }) => (
-                      <code className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-xs text-accent">{children}</code>
-                    ),
-                    pre: ({ children }) => (
-                      <pre className="mb-3 overflow-x-auto rounded-lg bg-surface-0 p-3 font-mono text-xs text-text-secondary">{children}</pre>
-                    ),
-                    blockquote: ({ children }) => (
-                      <blockquote className="mb-3 border-l-2 border-warning pl-3 text-sm text-warning/90">{children}</blockquote>
-                    ),
-                    hr: () => <hr className="my-4 border-border" />
-                  }}
-                >
-                  {content}
-                </Markdown>
-              </div>
-            </Suspense>
+            <AIMarkdown content={content} />
           ) : (
             <p className="text-sm text-text-muted">No summary available.</p>
           )}
@@ -319,6 +262,20 @@ export default function ClusterDashboard() {
             </span>
             <span className="text-xs text-text-muted">
               Connect to a cluster from the sidebar to view live data.
+            </span>
+          </div>
+        </div>
+      )}
+      {activeClusterId && connections[activeClusterId]?.status === 'error' && (
+        <div className="flex items-center gap-3 rounded-lg border border-danger/30 bg-danger/10 px-5 py-3">
+          <AlertTriangle className="h-5 w-5 text-danger shrink-0" />
+          <div className="flex flex-col">
+            <span className="text-sm font-medium text-text-primary">
+              Connection failed
+            </span>
+            <span className="text-xs text-text-muted">
+              {connections[activeClusterId]?.error ?? 'Unable to connect to the Kafka broker.'}
+              {' '}Check your cluster settings — you may need to change the authentication method.
             </span>
           </div>
         </div>
@@ -522,32 +479,28 @@ export default function ClusterDashboard() {
         </div>
 
         {topicsLoading ? (
-          <div className="grid grid-cols-3 gap-px bg-border">
+          <div className="flex flex-col divide-y divide-border">
             {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="flex items-center gap-3 bg-surface-1 px-5 py-4 animate-pulse">
-                <div className="h-5 w-5 rounded bg-surface-3 shrink-0" />
-                <div className="flex flex-col gap-1">
-                  <div className="h-4 w-32 rounded bg-surface-3" />
-                  <div className="h-3 w-24 rounded bg-surface-3" />
-                </div>
+              <div key={i} className="flex items-center gap-3 px-5 py-3 animate-pulse">
+                <div className="h-4 w-4 rounded bg-surface-3 shrink-0" />
+                <div className="h-4 w-40 rounded bg-surface-3" />
+                <div className="ml-auto h-3 w-24 rounded bg-surface-3" />
               </div>
             ))}
           </div>
         ) : dlqTopics.length > 0 ? (
-          <div className="grid grid-cols-3 gap-px bg-border">
+          <div className="flex flex-col divide-y divide-border">
             {dlqTopics.map((t) => (
               <button
                 key={t.name}
                 onClick={() => navigateToTopic(t.name)}
-                className="flex items-center gap-3 bg-surface-1 px-5 py-4 text-left hover:bg-surface-2 transition-colors"
+                className="flex items-center gap-3 px-5 py-3 text-left hover:bg-surface-2 transition-colors"
               >
-                <AlertTriangle className="h-5 w-5 shrink-0 text-warning" />
-                <div className="flex flex-col gap-0.5 min-w-0">
-                  <span className="truncate text-sm font-medium text-text-primary">{t.name}</span>
-                  <span className="text-xs text-text-muted">
-                    {t.messageCount.toLocaleString()} messages &middot; {t.partitions} partitions
-                  </span>
-                </div>
+                <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
+                <span className="truncate text-sm font-medium text-text-primary">{t.name}</span>
+                <span className="ml-auto text-xs text-text-muted">
+                  {t.messageCount.toLocaleString()} msgs &middot; {t.partitions} partitions
+                </span>
               </button>
             ))}
           </div>

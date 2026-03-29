@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback, lazy, Suspense } from 'react'
+import { useState, useMemo, useEffect, useCallback } from 'react'
 import {
   Crown,
   Search,
@@ -9,10 +9,8 @@ import {
   X,
   Loader2,
   Sparkles,
-  Shield,
 } from 'lucide-react'
-
-const Markdown = lazy(() => import('react-markdown'))
+import { AIMarkdown } from '@/components/common/AIMarkdown'
 import { useClusterStore } from '@/stores/clusterStore'
 import { useDataStore } from '@/stores/dataStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -231,27 +229,7 @@ function AIReviewModal({
             </div>
           )}
           {!state.loading && state.content && (
-            <Suspense fallback={<pre className="whitespace-pre-wrap text-sm leading-relaxed text-text-secondary font-sans">{state.content}</pre>}>
-              <Markdown
-                components={{
-                  h1: ({ children }) => <h1 className="mb-3 mt-1 flex items-center gap-2 text-lg font-bold text-text-primary"><Shield className="h-5 w-5 text-accent" />{children}</h1>,
-                  h2: ({ children }) => <h2 className="mb-2 mt-5 text-sm font-semibold text-text-primary border-b border-border pb-1.5">{children}</h2>,
-                  h3: ({ children }) => <h3 className="mb-1.5 mt-3 text-xs font-semibold text-text-primary">{children}</h3>,
-                  p: ({ children }) => <p className="mb-3 text-sm leading-relaxed text-text-secondary">{children}</p>,
-                  ul: ({ children }) => <ul className="mb-3 ml-1 space-y-1.5">{children}</ul>,
-                  ol: ({ children }) => <ol className="mb-3 ml-1 space-y-1.5 list-decimal list-inside">{children}</ol>,
-                  li: ({ children }) => <li className="flex items-start gap-2 text-sm text-text-secondary"><span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" /><span>{children}</span></li>,
-                  strong: ({ children }) => <strong className="font-semibold text-text-primary">{children}</strong>,
-                  em: ({ children }) => <em className="text-warning">{children}</em>,
-                  code: ({ children }) => <code className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-xs text-accent">{children}</code>,
-                  pre: ({ children }) => <pre className="mb-3 overflow-x-auto rounded-lg bg-surface-0 p-3 font-mono text-xs text-text-secondary">{children}</pre>,
-                  blockquote: ({ children }) => <blockquote className="mb-3 border-l-2 border-warning pl-3 text-sm text-warning/90">{children}</blockquote>,
-                  hr: () => <hr className="my-4 border-border" />,
-                }}
-              >
-                {state.content}
-              </Markdown>
-            </Suspense>
+            <AIMarkdown content={state.content} />
           )}
           {!state.loading && !state.content && (
             <p className="text-sm text-text-muted">No response received. Check the console (⌘⌥I) for errors.</p>

@@ -80,7 +80,7 @@ export function Sidebar() {
   function handleClusterSelect(clusterId: string) {
     setActiveCluster(clusterId)
     const conn = connections[clusterId]
-    if (!conn || conn.status === 'disconnected') {
+    if (!conn || conn.status === 'disconnected' || conn.status === 'error') {
       connectCluster(clusterId)
     }
     setClusterDropdownOpen(false)
@@ -206,9 +206,16 @@ export function Sidebar() {
             <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${STATUS_COLORS[connectionStatus]}`} />
           )}
           {!sidebarCollapsed && (
-            <span className="truncate text-[11px] text-text-muted">
-              {STATUS_LABELS[connectionStatus]}
-            </span>
+            <div className="min-w-0 flex-1">
+              <span className="truncate text-[11px] text-text-muted block">
+                {STATUS_LABELS[connectionStatus]}
+              </span>
+              {connectionStatus === 'error' && activeConnection?.error && (
+                <span className="truncate text-[10px] text-danger block" title={activeConnection.error}>
+                  {activeConnection.error}
+                </span>
+              )}
+            </div>
           )}
           {!sidebarCollapsed && activeClusterId && (
             <button
@@ -217,7 +224,7 @@ export function Sidebar() {
                   ? disconnectCluster(activeClusterId)
                   : connectCluster(activeClusterId)
               }
-              className="ml-auto flex h-5 w-5 items-center justify-center rounded text-text-muted transition-colors hover:bg-surface-3 hover:text-text-secondary"
+              className="ml-auto flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-muted transition-colors hover:bg-surface-3 hover:text-text-secondary"
               title={connectionStatus === 'connected' ? 'Disconnect' : 'Connect'}
             >
               {connectionStatus === 'connected' ? <Unplug size={12} /> : <Plug size={12} />}
