@@ -1,0 +1,11 @@
+{
+  "name": "@kafkalens/kafka-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "KafkaJS abstraction layer for KafkaLens",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  }
+}

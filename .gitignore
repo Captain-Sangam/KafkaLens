@@ -1,0 +1,13 @@
+node_modules/
+dist/
+out/
+.DS_Store
+*.log
+.env
+.env.local
+.vite/
+*.dmg
+*.zip
+*.tar.gz
+coverage/
+.turbo/
