@@ -52,10 +52,9 @@ app.whenReady().then(() => {
   const aiSettings = storeService.getAISettings()
   if (aiSettings?.enabled && aiSettings.apiKey) {
     aiService.configure({
-      provider: aiSettings.provider as 'openai' | 'anthropic' | 'google',
       apiKey: aiSettings.apiKey,
-      model: aiSettings.model,
-      redactedFields: aiSettings.redactedFields.split(',').map((s) => s.trim()).filter(Boolean)
+      model: aiSettings.model || 'gpt-4o',
+      redactedFields: aiSettings.redactedFields
     })
   }
 

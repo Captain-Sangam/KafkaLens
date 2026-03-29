@@ -35,7 +35,7 @@ body {
   background: var(--color-surface-0);
   color: var(--color-text-primary);
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
-  font-size: 13px;
+  font-size: var(--app-font-size, 13px);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
   user-select: none;

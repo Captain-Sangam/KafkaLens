@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useState, useMemo, useEffect, useCallback, lazy, Suspense } from 'react'
 import {
   Crown,
   Search,
@@ -9,7 +9,10 @@ import {
   X,
   Loader2,
   Sparkles,
+  Shield,
 } from 'lucide-react'
+
+const Markdown = lazy(() => import('react-markdown'))
 import { useClusterStore } from '@/stores/clusterStore'
 import { useDataStore } from '@/stores/dataStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -185,6 +188,90 @@ function CompareModal({
   )
 }
 
+function AIReviewModal({
+  state,
+  brokerLabel,
+  onClose
+}: {
+  state: { loading: boolean; content: string | null }
+  brokerLabel: string
+  onClose: () => void
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget && !state.loading) onClose() }}
+    >
+      <div className="animate-fade-in flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-surface-1 shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15">
+              <Sparkles className="h-4 w-4 text-accent" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-text-primary">AI Config Review — {brokerLabel}</h2>
+              <p className="text-[11px] text-text-muted">Powered by OpenAI</p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-3 hover:text-text-primary"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-6 py-5 min-h-[200px]">
+          {state.loading && (
+            <div className="flex flex-col items-center justify-center gap-4 py-12">
+              <Loader2 className="h-8 w-8 animate-spin text-accent" />
+              <p className="text-sm text-text-secondary">Reviewing broker configuration...</p>
+            </div>
+          )}
+          {!state.loading && state.content && (
+            <Suspense fallback={<pre className="whitespace-pre-wrap text-sm leading-relaxed text-text-secondary font-sans">{state.content}</pre>}>
+              <Markdown
+                components={{
+                  h1: ({ children }) => <h1 className="mb-3 mt-1 flex items-center gap-2 text-lg font-bold text-text-primary"><Shield className="h-5 w-5 text-accent" />{children}</h1>,
+                  h2: ({ children }) => <h2 className="mb-2 mt-5 text-sm font-semibold text-text-primary border-b border-border pb-1.5">{children}</h2>,
+                  h3: ({ children }) => <h3 className="mb-1.5 mt-3 text-xs font-semibold text-text-primary">{children}</h3>,
+                  p: ({ children }) => <p className="mb-3 text-sm leading-relaxed text-text-secondary">{children}</p>,
+                  ul: ({ children }) => <ul className="mb-3 ml-1 space-y-1.5">{children}</ul>,
+                  ol: ({ children }) => <ol className="mb-3 ml-1 space-y-1.5 list-decimal list-inside">{children}</ol>,
+                  li: ({ children }) => <li className="flex items-start gap-2 text-sm text-text-secondary"><span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" /><span>{children}</span></li>,
+                  strong: ({ children }) => <strong className="font-semibold text-text-primary">{children}</strong>,
+                  em: ({ children }) => <em className="text-warning">{children}</em>,
+                  code: ({ children }) => <code className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-xs text-accent">{children}</code>,
+                  pre: ({ children }) => <pre className="mb-3 overflow-x-auto rounded-lg bg-surface-0 p-3 font-mono text-xs text-text-secondary">{children}</pre>,
+                  blockquote: ({ children }) => <blockquote className="mb-3 border-l-2 border-warning pl-3 text-sm text-warning/90">{children}</blockquote>,
+                  hr: () => <hr className="my-4 border-border" />,
+                }}
+              >
+                {state.content}
+              </Markdown>
+            </Suspense>
+          )}
+          {!state.loading && !state.content && (
+            <p className="text-sm text-text-muted">No response received. Check the console (⌘⌥I) for errors.</p>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-border px-6 py-3">
+          <button
+            onClick={onClose}
+            className="rounded-lg bg-surface-3 px-4 py-2 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-4 hover:text-text-primary"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function BrokerConfig() {
   const { activeClusterId } = useClusterStore()
   const { brokers, brokersLoading, fetchBrokers } = useDataStore()
@@ -195,8 +282,9 @@ export function BrokerConfig() {
   const [showCompare, setShowCompare] = useState(false)
   const [brokerConfigs, setBrokerConfigs] = useState<Record<number, Record<string, string>>>({})
   const [configLoading, setConfigLoading] = useState(false)
-  const [aiAdvice, setAiAdvice] = useState<string | null>(null)
-  const [aiLoading, setAiLoading] = useState(false)
+  const [aiModal, setAiModal] = useState<{ open: boolean; loading: boolean; content: string | null }>({
+    open: false, loading: false, content: null
+  })
 
   useEffect(() => {
     if (activeClusterId) fetchBrokers(activeClusterId)
@@ -264,23 +352,42 @@ export function BrokerConfig() {
 
   const handleAiReview = async () => {
     if (Object.keys(currentConfig).length === 0) return
-    setAiLoading(true)
-    setAiAdvice(null)
+    setAiModal({ open: true, loading: true, content: null })
+
+    let result = ''
     try {
       const { checkAIConfigured } = await import('@/lib/ai-guard')
       const check = await checkAIConfigured()
-      if (!check.ok) { setAiAdvice(check.message!); return }
-      const res = await window.api.ai.adviseTopicConfig(currentConfig)
-      if (res.success && res.data) {
-        setAiAdvice(res.data.content)
+      if (!check.ok) {
+        result = check.message || 'AI is not configured.'
       } else {
-        addNotification('error', res.error ?? 'AI review failed')
+        const label = selectedBroker
+          ? `Broker ${selectedBroker.id} (${selectedBroker.host}:${selectedBroker.port})`
+          : `Broker ${selectedBrokerId}`
+        const trimmed: Record<string, string> = {}
+        for (const [k, v] of Object.entries(currentConfig)) {
+          if (v && v !== '' && v !== 'null') trimmed[k] = v
+        }
+        const res = await window.api.ai.adviseTopicConfig(label, trimmed, { messageCount: 0, partitions: 0, consumerLag: 0 })
+        if (res.success) {
+          const d = res.data
+          if (typeof d === 'string' && d) {
+            result = d
+          } else if (d && typeof d === 'object') {
+            const obj = d as Record<string, unknown>
+            result = String(obj.content || '') || JSON.stringify(d, null, 2)
+          }
+        }
+        if (!result) {
+          result = res.error || 'AI returned an empty response.'
+        }
       }
     } catch (err) {
-      addNotification('error', err instanceof Error ? err.message : 'AI review failed')
-    } finally {
-      setAiLoading(false)
+      result = (err instanceof Error ? err.message : String(err)) || 'Unknown error occurred.'
     }
+
+    if (!result) result = 'No response received from the AI service.'
+    setAiModal({ open: true, loading: false, content: result })
   }
 
   const handleOpenCompare = async () => {
@@ -315,10 +422,10 @@ export function BrokerConfig() {
         <div className="flex items-center gap-2">
           <button
             onClick={handleAiReview}
-            disabled={aiLoading || Object.keys(currentConfig).length === 0}
+            disabled={aiModal.loading || Object.keys(currentConfig).length === 0}
             className="flex items-center gap-1.5 rounded-lg bg-surface-3 px-3 py-1.5 text-xs text-text-primary transition-colors hover:bg-surface-4 disabled:opacity-50"
           >
-            {aiLoading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+            {aiModal.loading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
             AI Config Review
           </button>
           <button
@@ -361,23 +468,12 @@ export function BrokerConfig() {
               ))}
             </div>
 
-            {aiAdvice && (
-              <div className="bg-surface-2 border border-accent/20 rounded-lg p-5">
-                <div className="flex items-center gap-2 mb-3">
-                  <Sparkles className="w-4 h-4 text-accent" />
-                  <h3 className="text-sm font-medium text-accent">AI Configuration Review</h3>
-                </div>
-                <div className="text-xs text-text-secondary whitespace-pre-wrap leading-relaxed">
-                  {aiAdvice}
-                </div>
-              </div>
-            )}
-
-            {aiLoading && (
-              <div className="bg-surface-2 border border-border rounded-lg p-4 flex items-center gap-2">
-                <Loader2 className="w-4 h-4 animate-spin text-accent" />
-                <span className="text-xs text-text-muted">Reviewing broker configuration...</span>
-              </div>
+            {aiModal.open && (
+              <AIReviewModal
+                state={aiModal}
+                brokerLabel={selectedBroker ? `Broker ${selectedBroker.id} (${selectedBroker.host}:${selectedBroker.port})` : 'Broker'}
+                onClose={() => setAiModal({ open: false, loading: false, content: null })}
+              />
             )}
 
             {selectedBroker && (

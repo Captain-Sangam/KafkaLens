@@ -1,7 +1,4 @@
-type AIProvider = 'openai' | 'anthropic' | 'google'
-
 interface AIConfig {
-  provider: AIProvider
   apiKey: string
   model: string
   redactedFields: string[]
@@ -18,7 +15,7 @@ const SYSTEM_PROMPTS = {
   analyzeDLQRootCause:
     'You are a Kafka debugging expert. Given a Dead Letter Queue message with its exception details, analyze the probable root cause, suggest a fix (code-level where possible), and advise whether the message is safe to replay. Be specific and actionable.',
   adviseTopicConfig:
-    'You are a Kafka infrastructure advisor. Given a topic\'s configuration and metrics, compare against known best practices and provide specific recommendations with justification. Flag any risks. Suggest optimal config values.',
+    "You are a Kafka infrastructure advisor. Given a topic's configuration and metrics, compare against known best practices and provide specific recommendations with justification. Flag any risks. Suggest optimal config values.",
   explainSchemaDiff:
     'You are a schema evolution expert. Given two versions of a schema, explain what changed in plain English, whether the change is backward/forward compatible and why, and the impact on existing consumers and producers.',
   summarizeClusterHealth:
@@ -54,8 +51,16 @@ function redactObject(obj: unknown, fields: string[]): void {
 class AIService {
   private config: AIConfig | null = null
 
-  configure(config: AIConfig): void {
-    this.config = config
+  configure(config: Record<string, unknown>): void {
+    this.config = {
+      apiKey: String(config.apiKey ?? ''),
+      model: String(config.model ?? 'gpt-4o'),
+      redactedFields: Array.isArray(config.redactedFields)
+        ? config.redactedFields.map(String)
+        : typeof config.redactedFields === 'string'
+          ? config.redactedFields.split(',').map((s: string) => s.trim()).filter(Boolean)
+          : []
+    }
   }
 
   isConfigured(): boolean {
@@ -101,11 +106,7 @@ class AIService {
     return this.chat(SYSTEM_PROMPTS.adviseTopicConfig, userPrompt)
   }
 
-  async explainSchemaDiff(
-    subject: string,
-    before: string,
-    after: string
-  ): Promise<AIResponse> {
+  async explainSchemaDiff(subject: string, before: string, after: string): Promise<AIResponse> {
     const userPrompt = [
       `Schema subject: ${subject}`,
       `\nPrevious version:\n\`\`\`\n${before}\n\`\`\``,
@@ -139,30 +140,12 @@ class AIService {
   }
 
   private async chat(systemPrompt: string, userPrompt: string): Promise<AIResponse> {
-    if (!this.config) {
-      throw new Error('AI service is not configured. Call configure() first.')
+    if (!this.config || !this.config.apiKey) {
+      throw new Error('AI is not configured. Add your OpenAI API key in Settings.')
     }
 
-    const { provider, apiKey, model } = this.config
+    const { apiKey, model } = this.config
 
-    switch (provider) {
-      case 'openai':
-        return this.callOpenAI(apiKey, model, systemPrompt, userPrompt)
-      case 'anthropic':
-        return this.callAnthropic(apiKey, model, systemPrompt, userPrompt)
-      case 'google':
-        return this.callGoogle(apiKey, model, systemPrompt, userPrompt)
-      default:
-        throw new Error(`Unsupported AI provider: ${provider}`)
-    }
-  }
-
-  private async callOpenAI(
-    apiKey: string,
-    model: string,
-    systemPrompt: string,
-    userPrompt: string
-  ): Promise<AIResponse> {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -175,7 +158,7 @@ class AIService {
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        max_tokens: 2048
+        max_completion_tokens: 4096
       })
     })
 
@@ -185,85 +168,22 @@ class AIService {
     }
 
     const data = await res.json()
+    const choice = data.choices?.[0]
+    const content = choice?.message?.content ?? ''
+
+    if (!content && choice?.finish_reason === 'length') {
+      return {
+        content: 'The response was too long and got truncated. Try selecting fewer config keys or a model with a larger context window.',
+        usage: data.usage ? { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens } : undefined
+      }
+    }
+
     return {
-      content: data.choices[0].message.content,
+      content: content || 'AI returned an empty response.',
       usage: data.usage
         ? {
             promptTokens: data.usage.prompt_tokens,
             completionTokens: data.usage.completion_tokens
-          }
-        : undefined
-    }
-  }
-
-  private async callAnthropic(
-    apiKey: string,
-    model: string,
-    systemPrompt: string,
-    userPrompt: string
-  ): Promise<AIResponse> {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 2048,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }]
-      })
-    })
-
-    if (!res.ok) {
-      const body = await res.text()
-      throw new Error(`Anthropic API error (${res.status}): ${body}`)
-    }
-
-    const data = await res.json()
-    return {
-      content: data.content[0].text,
-      usage: data.usage
-        ? {
-            promptTokens: data.usage.input_tokens,
-            completionTokens: data.usage.output_tokens
-          }
-        : undefined
-    }
-  }
-
-  private async callGoogle(
-    apiKey: string,
-    model: string,
-    systemPrompt: string,
-    userPrompt: string
-  ): Promise<AIResponse> {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [
-          { role: 'user', parts: [{ text: `${systemPrompt}\n\n${userPrompt}` }] }
-        ],
-        generationConfig: { maxOutputTokens: 2048 }
-      })
-    })
-
-    if (!res.ok) {
-      const body = await res.text()
-      throw new Error(`Google AI API error (${res.status}): ${body}`)
-    }
-
-    const data = await res.json()
-    return {
-      content: data.candidates[0].content.parts[0].text,
-      usage: data.usageMetadata
-        ? {
-            promptTokens: data.usageMetadata.promptTokenCount,
-            completionTokens: data.usageMetadata.candidatesTokenCount
           }
         : undefined
     }

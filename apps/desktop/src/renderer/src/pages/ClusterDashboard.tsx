@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, lazy, Suspense } from 'react'
 import {
   LayoutDashboard,
   Database,
@@ -8,17 +8,23 @@ import {
   Skull,
   Activity,
   ChevronRight,
-  ChevronDown,
   CircleAlert,
   CircleCheck,
   Sparkles,
   Loader2,
-  Unplug
+  Unplug,
+  X,
+  CheckCircle2,
+  AlertOctagon,
+  TrendingUp,
+  Shield
 } from 'lucide-react'
 import { useClusterStore } from '@/stores/clusterStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useDataStore } from '@/stores/dataStore'
 import type { ConsumerGroupState } from '@/types'
+
+const Markdown = lazy(() => import('react-markdown'))
 
 const STATE_STYLES: Record<ConsumerGroupState, { bg: string; text: string }> = {
   Stable: { bg: 'bg-success/15', text: 'text-success' },
@@ -60,6 +66,120 @@ function SkeletonRow() {
         </div>
       </div>
       <div className="h-5 w-16 rounded-full bg-surface-3" />
+    </div>
+  )
+}
+
+function AIHealthModal({
+  loading,
+  content,
+  onClose
+}: {
+  loading: boolean
+  content: string | null
+  onClose: () => void
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div className="animate-fade-in flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-surface-1 shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15">
+              <Sparkles className="h-4 w-4 text-accent" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-text-primary">AI Health Summary</h2>
+              <p className="text-[11px] text-text-muted">Powered by OpenAI</p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-3 hover:text-text-primary"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          {loading ? (
+            <div className="flex flex-col items-center justify-center gap-4 py-12">
+              <Loader2 className="h-8 w-8 animate-spin text-accent" />
+              <p className="text-sm text-text-secondary">Analyzing cluster health...</p>
+            </div>
+          ) : content ? (
+            <Suspense fallback={<p className="text-sm text-text-secondary whitespace-pre-wrap">{content}</p>}>
+              <div className="prose-kafkalens">
+                <Markdown
+                  components={{
+                    h1: ({ children }) => (
+                      <h1 className="mb-3 mt-1 flex items-center gap-2 text-lg font-bold text-text-primary">
+                        <Shield className="h-5 w-5 text-accent" />
+                        {children}
+                      </h1>
+                    ),
+                    h2: ({ children }) => (
+                      <h2 className="mb-2 mt-5 text-sm font-semibold text-text-primary border-b border-border pb-1.5">{children}</h2>
+                    ),
+                    h3: ({ children }) => (
+                      <h3 className="mb-1.5 mt-3 text-xs font-semibold text-text-primary">{children}</h3>
+                    ),
+                    p: ({ children }) => (
+                      <p className="mb-3 text-sm leading-relaxed text-text-secondary">{children}</p>
+                    ),
+                    ul: ({ children }) => (
+                      <ul className="mb-3 ml-1 space-y-1.5">{children}</ul>
+                    ),
+                    ol: ({ children }) => (
+                      <ol className="mb-3 ml-1 space-y-1.5 list-decimal list-inside">{children}</ol>
+                    ),
+                    li: ({ children }) => (
+                      <li className="flex items-start gap-2 text-sm text-text-secondary">
+                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+                        <span>{children}</span>
+                      </li>
+                    ),
+                    strong: ({ children }) => (
+                      <strong className="font-semibold text-text-primary">{children}</strong>
+                    ),
+                    em: ({ children }) => (
+                      <em className="text-warning">{children}</em>
+                    ),
+                    code: ({ children }) => (
+                      <code className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-xs text-accent">{children}</code>
+                    ),
+                    pre: ({ children }) => (
+                      <pre className="mb-3 overflow-x-auto rounded-lg bg-surface-0 p-3 font-mono text-xs text-text-secondary">{children}</pre>
+                    ),
+                    blockquote: ({ children }) => (
+                      <blockquote className="mb-3 border-l-2 border-warning pl-3 text-sm text-warning/90">{children}</blockquote>
+                    ),
+                    hr: () => <hr className="my-4 border-border" />
+                  }}
+                >
+                  {content}
+                </Markdown>
+              </div>
+            </Suspense>
+          ) : (
+            <p className="text-sm text-text-muted">No summary available.</p>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-border px-6 py-3">
+          <button
+            onClick={onClose}
+            className="rounded-lg bg-surface-3 px-4 py-2 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-4 hover:text-text-primary"
+          >
+            Close
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -224,32 +344,13 @@ export default function ClusterDashboard() {
         </button>
       </div>
 
-      {/* AI Summary panel */}
+      {/* AI Summary modal */}
       {aiPanelOpen && (
-        <div className="rounded-lg border border-accent/30 bg-accent/5 overflow-hidden transition-all">
-          <button
-            onClick={() => setAiPanelOpen(false)}
-            className="flex w-full items-center justify-between px-5 py-3 text-left hover:bg-accent/10 transition-colors"
-          >
-            <div className="flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-accent" />
-              <span className="text-sm font-semibold text-text-primary">AI Health Summary</span>
-            </div>
-            <ChevronDown className="h-4 w-4 text-text-muted" />
-          </button>
-          <div className="border-t border-accent/20 px-5 py-4">
-            {aiLoading ? (
-              <div className="flex items-center gap-3 text-sm text-text-secondary">
-                <Loader2 className="h-4 w-4 animate-spin text-accent" />
-                Analyzing cluster health...
-              </div>
-            ) : (
-              <p className="text-sm leading-relaxed text-text-secondary whitespace-pre-wrap">
-                {aiSummary}
-              </p>
-            )}
-          </div>
-        </div>
+        <AIHealthModal
+          loading={aiLoading}
+          content={aiSummary}
+          onClose={() => setAiPanelOpen(false)}
+        />
       )}
 
       {/* Stat cards */}

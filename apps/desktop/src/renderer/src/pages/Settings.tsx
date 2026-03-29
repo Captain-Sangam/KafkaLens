@@ -17,7 +17,8 @@ import {
   Loader2,
   Download,
   Upload,
-  AlertTriangle
+  AlertTriangle,
+  RefreshCw
 } from 'lucide-react'
 import { useClusterStore } from '@/stores/clusterStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -51,17 +52,7 @@ const ENV_DOT_COLORS: Record<EnvironmentLabel, string> = {
   prod: 'bg-red-500'
 }
 
-const AI_PROVIDERS: { value: AIProvider; label: string }[] = [
-  { value: 'openai', label: 'OpenAI' },
-  { value: 'anthropic', label: 'Anthropic (Claude)' },
-  { value: 'google', label: 'Google (Gemini)' }
-]
-
-const AI_MODELS: Record<AIProvider, string[]> = {
-  openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
-  anthropic: ['claude-sonnet-4-20250514', 'claude-3.5-sonnet', 'claude-3-haiku'],
-  google: ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash']
-}
+const DEFAULT_MODELS = ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo']
 
 const FONT_SIZE_MAP = { small: '13px', medium: '14px', large: '16px' } as const
 
@@ -566,14 +557,152 @@ function ClusterManagementSection() {
 // 2. AI Configuration
 // ---------------------------------------------------------------------------
 
+interface AIFormProps {
+  settings: AISettings
+  setSettings: React.Dispatch<React.SetStateAction<AISettings>>
+  showKey: boolean
+  setShowKey: React.Dispatch<React.SetStateAction<boolean>>
+  savingAI: boolean
+  onSave: () => void
+}
+
+function AISettingsForm({ settings, setSettings, showKey, setShowKey, savingAI, onSave }: AIFormProps) {
+  const [fetchedModels, setFetchedModels] = useState<string[] | null>(null)
+  const [fetchingModels, setFetchingModels] = useState(false)
+
+  const models = fetchedModels ?? DEFAULT_MODELS
+
+  async function handleFetchModels() {
+    if (!settings.apiKey.trim()) return
+    setFetchingModels(true)
+    try {
+      const res = await fetch('https://api.openai.com/v1/models', {
+        headers: { Authorization: `Bearer ${settings.apiKey}` }
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const gptModels = (data.data as { id: string }[])
+          .map((m) => m.id)
+          .filter((id) => id.startsWith('gpt-'))
+          .sort()
+        if (gptModels.length > 0) {
+          setFetchedModels(gptModels)
+          if (!gptModels.includes(settings.model)) {
+            setSettings((s) => ({ ...s, model: gptModels[0] }))
+          }
+          return
+        }
+      }
+      setFetchedModels(null)
+    } catch {
+      setFetchedModels(null)
+    } finally {
+      setFetchingModels(false)
+    }
+  }
+
+  return (
+    <div className="space-y-4 rounded-lg border border-border bg-surface-1 p-5">
+      {/* API Key */}
+      <div className="space-y-1.5">
+        <label className="text-xs font-medium text-text-secondary">OpenAI API Key</label>
+        <div className="relative">
+          <input
+            type={showKey ? 'text' : 'password'}
+            value={settings.apiKey}
+            onChange={(e) => setSettings((s) => ({ ...s, apiKey: e.target.value }))}
+            placeholder="sk-..."
+            className={`${inputClasses} pr-10`}
+          />
+          <button
+            type="button"
+            onClick={() => setShowKey((v) => !v)}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted transition-colors hover:text-text-secondary"
+          >
+            {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
+          </button>
+        </div>
+        <p className="flex items-center gap-1.5 text-[11px] text-text-muted">
+          <Shield size={10} />
+          Your API key is stored securely in the system keychain
+        </p>
+      </div>
+
+      {/* Model — with fetch button */}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-medium text-text-secondary">Model</label>
+          <button
+            onClick={handleFetchModels}
+            disabled={fetchingModels || !settings.apiKey.trim()}
+            className="flex items-center gap-1 text-[11px] text-accent hover:text-accent-hover transition-colors disabled:opacity-40"
+          >
+            {fetchingModels ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+            Fetch models
+          </button>
+        </div>
+        <select
+          value={settings.model}
+          onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
+          className={selectClasses}
+        >
+          {models.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+        {fetchedModels && (
+          <p className="text-[11px] text-success">
+            {fetchedModels.length} models loaded from your account
+          </p>
+        )}
+      </div>
+
+      {/* Redacted fields */}
+      <div className="space-y-1.5">
+        <label className="text-xs font-medium text-text-secondary">Field Redaction</label>
+        <input
+          type="text"
+          value={settings.redactedFields.join(', ')}
+          onChange={(e) =>
+            setSettings((s) => ({
+              ...s,
+              redactedFields: e.target.value
+                .split(',')
+                .map((f) => f.trim())
+                .filter(Boolean)
+            }))
+          }
+          placeholder="password, token, ssn, secret"
+          className={inputClasses}
+        />
+        <p className="text-[11px] text-text-muted">
+          Comma-separated field patterns to redact before sending to AI
+        </p>
+      </div>
+
+      {/* Save */}
+      <button
+        onClick={onSave}
+        disabled={savingAI || !settings.apiKey.trim()}
+        className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-xs text-white transition-colors hover:bg-accent-hover disabled:opacity-40"
+      >
+        {savingAI ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+        Save AI Settings
+      </button>
+    </div>
+  )
+}
+
 function AIConfigSection() {
   const addNotification = useUIStore((s) => s.addNotification)
 
   const [settings, setSettings] = useState<AISettings>({
     enabled: false,
-    provider: 'anthropic',
+    provider: 'openai',
     apiKey: '',
-    model: 'claude-sonnet-4-20250514',
+    model: 'gpt-4o',
     redactedFields: ['password', 'token', 'ssn', 'secret']
   })
   const [showKey, setShowKey] = useState(false)
@@ -609,14 +738,6 @@ function AIConfigSection() {
       cancelled = true
     }
   }, [])
-
-  function handleProviderChange(provider: AIProvider) {
-    setSettings((s) => ({
-      ...s,
-      provider,
-      model: AI_MODELS[provider][0]
-    }))
-  }
 
   async function handleSaveAI() {
     setSavingAI(true)
@@ -676,111 +797,14 @@ function AIConfigSection() {
           </div>
 
           {settings.enabled && (
-            <div className="space-y-4 rounded-lg border border-border bg-surface-1 p-5">
-              {/* Provider segmented control */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-text-secondary">Provider</label>
-                <div className="flex gap-1 rounded-lg bg-surface-2 p-1">
-                  {AI_PROVIDERS.map((p) => (
-                    <button
-                      key={p.value}
-                      onClick={() => handleProviderChange(p.value)}
-                      className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                        settings.provider === p.value
-                          ? 'bg-accent text-white shadow-sm'
-                          : 'text-text-secondary hover:text-text-primary'
-                      }`}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Model dropdown */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-text-secondary">Model</label>
-                <select
-                  value={settings.model}
-                  onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
-                  className={selectClasses}
-                >
-                  {AI_MODELS[settings.provider].map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* API Key */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-text-secondary">API Key</label>
-                <div className="relative">
-                  <input
-                    type={showKey ? 'text' : 'password'}
-                    value={settings.apiKey}
-                    onChange={(e) => setSettings((s) => ({ ...s, apiKey: e.target.value }))}
-                    placeholder={
-                      settings.provider === 'openai'
-                        ? 'sk-...'
-                        : settings.provider === 'anthropic'
-                          ? 'sk-ant-...'
-                          : 'AIza...'
-                    }
-                    className={`${inputClasses} pr-10`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowKey((v) => !v)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted transition-colors hover:text-text-secondary"
-                  >
-                    {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                  </button>
-                </div>
-                <p className="flex items-center gap-1.5 text-[11px] text-text-muted">
-                  <Shield size={10} />
-                  Your API key is stored securely in the system keychain
-                </p>
-              </div>
-
-              {/* Redacted fields */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-text-secondary">Field Redaction</label>
-                <input
-                  type="text"
-                  value={settings.redactedFields.join(', ')}
-                  onChange={(e) =>
-                    setSettings((s) => ({
-                      ...s,
-                      redactedFields: e.target.value
-                        .split(',')
-                        .map((f) => f.trim())
-                        .filter(Boolean)
-                    }))
-                  }
-                  placeholder="password, token, ssn, secret"
-                  className={inputClasses}
-                />
-                <p className="text-[11px] text-text-muted">
-                  Comma-separated field patterns to redact before sending to AI
-                </p>
-              </div>
-
-              {/* Save */}
-              <button
-                onClick={handleSaveAI}
-                disabled={savingAI || !settings.apiKey.trim()}
-                className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-xs text-white transition-colors hover:bg-accent-hover disabled:opacity-40"
-              >
-                {savingAI ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Save size={14} />
-                )}
-                Save AI Settings
-              </button>
-            </div>
+            <AISettingsForm
+              settings={settings}
+              setSettings={setSettings}
+              showKey={showKey}
+              setShowKey={setShowKey}
+              savingAI={savingAI}
+              onSave={handleSaveAI}
+            />
           )}
         </>
       )}
