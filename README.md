@@ -1,8 +1,14 @@
-# KafkaLens
+<p align="center">
+  <img src="apps/desktop/build/icon.iconset/icon_512x512.png" width="128" alt="KafkaLens app icon: connected nodes forming a K">
+</p>
 
-A free, open-source desktop workspace for inspecting, debugging, and managing Apache Kafka on macOS.
+<h1 align="center">KafkaLens</h1>
+
+<p align="center"><strong>A free, open-source desktop workspace for Apache Kafka on macOS.</strong></p>
 
 Browse messages, investigate consumer lag, compare schemas, and replay failed records from one window. KafkaLens brings topic, partition, consumer group, Schema Registry, and broker views together, with an optional AI assistant for explanations and troubleshooting.
+
+![KafkaLens dashboard showing topic health, consumer groups, broker count, and dead letter queues on a local demo cluster](docs/images/dashboard.png)
 
 Connect local, development, staging, and production clusters with distinct environment labels. A dark interface, command palette, and page shortcuts keep everyday Kafka work close at hand.
 
@@ -21,6 +27,31 @@ Connect local, development, staging, and production clusters with distinct envir
 - **Broker configuration** — Descriptions, defaults, cross-broker comparisons, durable change history, and exports.
 - **Optional AI** — Message explanations, DLQ analysis, schema and configuration advice, health summaries, semantic topic search, and opt-in lag anomaly monitoring.
 - **Keyboard access** — Command palette, page navigation, topic search, and refresh shortcuts.
+
+## A look inside
+
+Screenshots show the actual app connected to a disposable local Kafka cluster with sample order, payment, and inventory events.
+
+<details>
+<summary><strong>Browse messages</strong> — offsets, partitions, decoded values, and filters</summary>
+
+![KafkaLens message browser showing JSON order events, keys, partitions, and offset controls](docs/images/messages.png)
+
+</details>
+
+<details>
+<summary><strong>Inspect consumer groups</strong> — lag, committed offsets, and exports</summary>
+
+![KafkaLens consumer group view showing session lag and committed offsets across three partitions](docs/images/consumer-groups.png)
+
+</details>
+
+<details>
+<summary><strong>Compare schemas</strong> — subjects, versions, and field changes</summary>
+
+![KafkaLens Schema Registry view comparing two Avro versions with an added optional warehouse field](docs/images/schema-registry.png)
+
+</details>
 
 ## Requirements
 
@@ -98,6 +129,16 @@ Run `make` or `make help` for the full target list. The [Makefile](Makefile) wra
 | `make test`    | Run unit tests                                  |
 | `make package` | Build unsigned local macOS DMG and ZIP previews |
 | `make clean`   | Remove generated builds, packages, and coverage |
+
+To regenerate the README screenshots using an isolated app profile and sample data:
+
+```bash
+make fixtures-up
+make screenshots
+make fixtures-down
+```
+
+The capture script writes to `docs/images/`, removes its demo records and temporary profile, and leaves your normal KafkaLens profile untouched.
 
 Run real Kafka, Schema Registry, desktop, and performance checks against the disposable fixtures:
 

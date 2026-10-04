@@ -2,7 +2,7 @@
 # source of truth for how KafkaLens is built and run.
 
 .DEFAULT_GOAL := help
-.PHONY: help install dev build start typecheck lint test check audit package export clean \
+.PHONY: help install dev build start typecheck lint test check audit package export clean screenshots \
 	test-integration test-desktop test-performance fixtures-up fixtures-down
 
 NPM ?= npm
@@ -55,6 +55,9 @@ test-desktop: build ## Run the macOS desktop suite (needs fixtures-up)
 
 test-performance: ## Run Kafka performance benchmarks (needs fixtures-up)
 	$(NPM) run test:performance
+
+screenshots: build ## Capture README images with local demo data (needs fixtures-up)
+	env -u ELECTRON_RUN_AS_NODE $(NODE) scripts/capture-readme.mjs
 
 package: ## Build unsigned local macOS DMG and ZIP previews
 	@test "$$(uname -s)" = Darwin || { echo "macOS packaging requires macOS."; exit 1; }
