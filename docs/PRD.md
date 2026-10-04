@@ -1,5 +1,7 @@
 # KafkaLens — Product Requirements Document
 
+This document records product requirements and roadmap plans. See [architecture](ARCHITECTURE.md) for the current implementation and [validation](VALIDATION.md) for completed scope and remaining gates.
+
 **Version:** 0.1 (Draft)
 **Status:** In Review
 **Owner:** Ajay Sangamithran
@@ -44,7 +46,7 @@ Sam builds pipelines that consume from Kafka into data warehouses and lakes. The
 - Partition-level visibility: leader, replicas, ISR, offset watermarks
 - Cluster and broker configuration viewer
 - AI-powered assistant layer: recommendations, anomaly highlights, message explanation
-- Open-source under Apache 2.0 license
+- Open-source under the MIT license
 
 ### 2.2 Non-Goals (v1.0)
 
@@ -458,7 +460,7 @@ The right detail panel is collapsible. A bottom status bar shows connection stat
 
 ### 8.1 License
 
-Apache License 2.0. Commercial use permitted. No CLA required for contributions.
+[MIT license](../LICENSE). Commercial use permitted. No CLA required for contributions.
 
 ### 8.2 Repository Structure
 
@@ -471,7 +473,7 @@ kafkalens/
 │   ├── schema-client/    # Schema Registry REST client
 │   ├── ai-layer/         # Claude API integration
 │   └── ui-components/    # Shared React component library
-├── docs/                 # Documentation site source (Docusaurus)
+├── docs/                 # User, architecture, development, and release guides
 └── .github/
     └── workflows/        # CI/CD: lint, test, build, release
 ```

@@ -4,7 +4,7 @@
   "private": true,
   "description": "Open-source Kafka desktop client for inspecting, debugging, and managing Apache Kafka clusters",
   "author": "KafkaLens Contributors",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "workspaces": [
     "apps/*",
     "packages/*"

@@ -2,6 +2,22 @@
 
 Use Node 24 and macOS 13 or newer. `npm ci --ignore-scripts`, `node node_modules/electron/install.js`, and `npm run check` prepare and validate a checkout. SQLite 13 includes portable native prebuilds; rebuilding is only needed when a platform prebuild is unavailable.
 
+## Local installation and packaging
+
+Run commands from the repository root. `make install` installs the locked dependencies and Electron binary, and `make check` runs lint, typechecks, unit tests, and a production build.
+
+```bash
+make install
+make check
+make export
+```
+
+`make export` creates an unsigned app for local use and installs it in `/Applications` when writable, otherwise `~/Applications`. Quit KafkaLens before replacing an existing app. Override the destination with `make export APP_DEST="$HOME/Applications"`, then launch KafkaLens from Spotlight (`⌘Space`).
+
+`make dev` starts hot reload, and `make start` builds and opens the production preview. Both clear `ELECTRON_RUN_AS_NODE` before launch. Build output is written to `apps/desktop/out/`; packaged output is written to `apps/desktop/release/`.
+
+Use `make package` for unsigned local macOS DMG and ZIP previews. These previews are for local verification; signed distribution requires the release workflow and credentials below. KafkaLens is a local desktop app that connects to existing Kafka/Registry deployments; the disposable Docker cluster is a development fixture.
+
 ## Validation
 
 See [Implementation and validation results](VALIDATION.md) for completed scope, measured performance, and remaining acceptance gates.
