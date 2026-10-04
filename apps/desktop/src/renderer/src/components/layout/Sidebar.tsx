@@ -13,6 +13,7 @@ import {
   Unplug,
   Loader2
 } from 'lucide-react'
+import { useDataStore } from '@/stores/dataStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useClusterStore } from '@/stores/clusterStore'
 import type { NavigationPage, EnvironmentLabel, ConnectionStatus } from '@/types'
@@ -40,14 +41,22 @@ const STATUS_COLORS: Record<ConnectionStatus, string> = {
 }
 
 export function Sidebar() {
-  const { currentPage, setCurrentPage, selectedTopicName, sidebarCollapsed } =
-    useUIStore()
-  const { clusters, activeClusterId, connections, setActiveCluster, connectCluster, disconnectCluster } =
-    useClusterStore()
+  const { currentPage, setCurrentPage, selectedTopicName, sidebarCollapsed } = useUIStore()
+  const {
+    clusters,
+    activeClusterId,
+    connections,
+    setActiveCluster,
+    connectCluster,
+    disconnectCluster
+  } = useClusterStore()
 
   const [clusterDropdownOpen, setClusterDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
+  const dlqCount = useDataStore((s) =>
+    s.topics.filter((t) => t.isDLQ).reduce((n, t) => n + t.messageCount, 0)
+  )
   const activeCluster = clusters.find((c) => c.id === activeClusterId)
   const activeConnection = activeClusterId ? connections[activeClusterId] : null
   const connectionStatus: ConnectionStatus = activeConnection?.status ?? 'disconnected'
@@ -61,6 +70,7 @@ export function Sidebar() {
       icon: MessageSquare,
       showWhen: () => selectedTopicName !== null
     },
+    { id: 'partitions', label: 'Partitions', icon: FolderTree },
     { id: 'consumer-groups', label: 'Consumer Groups', icon: Users },
     { id: 'schema-registry', label: 'Schema Registry', icon: FileCode2 },
     { id: 'dlq', label: 'DLQ', icon: AlertTriangle },
@@ -78,10 +88,11 @@ export function Sidebar() {
   }, [])
 
   function handleClusterSelect(clusterId: string) {
-    setActiveCluster(clusterId)
     const conn = connections[clusterId]
     if (!conn || conn.status === 'disconnected' || conn.status === 'error') {
-      connectCluster(clusterId)
+      void connectCluster(clusterId)
+    } else if (conn.status === 'connected') {
+      setActiveCluster(clusterId)
     }
     setClusterDropdownOpen(false)
   }
@@ -163,6 +174,8 @@ export function Sidebar() {
               return (
                 <li key={item.id}>
                   <button
+                    aria-label={item.label}
+                    aria-current={isActive ? 'page' : undefined}
                     onClick={() => setCurrentPage(item.id)}
                     title={sidebarCollapsed ? item.label : undefined}
                     className={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors ${
@@ -172,7 +185,19 @@ export function Sidebar() {
                     } ${sidebarCollapsed ? 'justify-center' : ''}`}
                   >
                     <Icon size={16} className="shrink-0" />
-                    {!sidebarCollapsed && <span className="truncate">{item.label}</span>}
+                    {!sidebarCollapsed && (
+                      <span className="truncate">
+                        {item.label}
+                        {item.id === 'dlq' && dlqCount > 0 && (
+                          <span
+                            className="ml-2 rounded bg-danger/15 px-1.5 text-danger"
+                            title="DLQ retained offset span"
+                          >
+                            {dlqCount.toLocaleString()}
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </button>
                 </li>
               )
@@ -197,13 +222,13 @@ export function Sidebar() {
 
       {/* Connection status footer */}
       <div className="shrink-0 border-t border-border px-2 py-2">
-        <div
-          className={`flex items-center gap-2 ${sidebarCollapsed ? 'justify-center' : ''}`}
-        >
+        <div className={`flex items-center gap-2 ${sidebarCollapsed ? 'justify-center' : ''}`}>
           {connectionStatus === 'connecting' ? (
             <Loader2 size={12} className="shrink-0 animate-spin text-warning" />
           ) : (
-            <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${STATUS_COLORS[connectionStatus]}`} />
+            <span
+              className={`inline-block h-2 w-2 shrink-0 rounded-full ${STATUS_COLORS[connectionStatus]}`}
+            />
           )}
           {!sidebarCollapsed && (
             <div className="min-w-0 flex-1">
@@ -211,7 +236,10 @@ export function Sidebar() {
                 {STATUS_LABELS[connectionStatus]}
               </span>
               {connectionStatus === 'error' && activeConnection?.error && (
-                <span className="truncate text-[10px] text-danger block" title={activeConnection.error}>
+                <span
+                  className="truncate text-[10px] text-danger block"
+                  title={activeConnection.error}
+                >
                   {activeConnection.error}
                 </span>
               )}

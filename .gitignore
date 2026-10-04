@@ -11,3 +11,9 @@ out/
 *.tar.gz
 coverage/
 .turbo/
+
+*.tsbuildinfo
+apps/desktop/release/
+output/
+playwright-report/
+test-results/

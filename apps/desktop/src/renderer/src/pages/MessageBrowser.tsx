@@ -1,700 +1,627 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
-import {
-  ChevronDown,
-  RefreshCw,
-  Radio,
-  Sparkles,
-  Copy,
-  Check,
-  Inbox,
-  Send,
-  X,
-  Plus,
-  Trash2,
-  Loader2
-} from 'lucide-react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useUIStore } from '@/stores/uiStore'
-import { useDataStore } from '@/stores/dataStore'
 import { useClusterStore } from '@/stores/clusterStore'
-import type { KafkaMessage } from '@/types'
-
-type OffsetMode = 'latest' | 'earliest' | 'custom'
-
-const PAGE_SIZES = [10, 50, 100, 500] as const
-
-function syntaxHighlightJSON(json: string): string {
-  return json.replace(
-    /("(?:\\.|[^"\\])*")\s*(:)?|(\b(?:true|false)\b)|(null)|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
-    (
-      match,
-      str: string | undefined,
-      colon: string | undefined,
-      bool: string | undefined,
-      nil: string | undefined,
-      num: string | undefined
-    ) => {
-      if (str) {
-        if (colon) return `<span class="text-info">${str}</span>:`
-        return `<span class="text-success">${str}</span>`
-      }
-      if (bool) return `<span class="text-[#c084fc]">${bool}</span>`
-      if (nil) return `<span class="text-danger">${nil}</span>`
-      if (num) return `<span class="text-warning">${num}</span>`
-      return match
-    }
-  )
+import { useDataStore } from '@/stores/dataStore'
+import { JsonViewer } from '@/components/common/JsonViewer'
+import { AIMarkdown } from '@/components/common/AIMarkdown'
+import type {
+  KafkaMessage,
+  FetchOptions,
+  TopicPartition,
+  ProduceOptions,
+  PayloadFormat
+} from '@/types'
+const field = 'rounded border border-border bg-surface-2 px-3 py-2 text-sm text-text-primary'
+const button = 'rounded bg-surface-3 px-3 py-2 text-sm hover:bg-surface-4 disabled:opacity-40'
+interface Preset {
+  name: string
+  options: Omit<FetchOptions, 'topic'>
 }
-
-function formatTimestamp(iso: string): string {
-  const d = new Date(iso)
-  return d.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  })
+interface Template {
+  name: string
+  message: ProduceOptions
 }
-
-function truncate(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max) + '...' : s
-}
-
-function SkeletonRow() {
-  return (
-    <tr className="border-b border-border/50">
-      {[...Array(5)].map((_, i) => (
-        <td key={i} className="px-4 py-3">
-          <div className="h-3 animate-pulse rounded bg-surface-3" style={{ width: `${40 + Math.random() * 40}%` }} />
-        </td>
-      ))}
-    </tr>
-  )
-}
-
 export default function MessageBrowser() {
-  const { selectedTopicName, addNotification } = useUIStore()
-  const { activeClusterId } = useClusterStore()
-  const { messages, messagesLoading, fetchMessages, produceMessage } = useDataStore()
-
-  const [pageSize, setPageSize] = useState<number>(50)
-  const [offsetMode, setOffsetMode] = useState<OffsetMode>('latest')
-  const [partition, setPartition] = useState<number>(-1)
-  const [liveTail, setLiveTail] = useState(false)
-  const [expandedOffset, setExpandedOffset] = useState<string | null>(null)
-  const [showProduceModal, setShowProduceModal] = useState(false)
-
-  const liveTailRef = useRef(liveTail)
-  liveTailRef.current = liveTail
-
-  const topicMessages = useMemo(() => {
-    if (!selectedTopicName) return []
-    return messages[selectedTopicName] ?? []
-  }, [messages, selectedTopicName])
-
-  const filtered = useMemo(() => {
-    if (partition < 0) return topicMessages
-    return topicMessages.filter((m) => m.partition === partition)
-  }, [topicMessages, partition])
-
-  const partitions = useMemo(() => {
-    const set = new Set(topicMessages.map((m) => m.partition))
-    return [...set].sort((a, b) => a - b)
-  }, [topicMessages])
-
-  const doFetch = useCallback(() => {
-    if (!activeClusterId || !selectedTopicName) return
-    fetchMessages(activeClusterId, selectedTopicName, {
-      partition: partition >= 0 ? partition : undefined,
-      offset: offsetMode,
-      limit: pageSize
+  const { selectedTopicName: topic, addNotification } = useUIStore()
+  const { activeClusterId: cluster } = useClusterStore()
+  const { messages, fetchMessages, messagesLoading } = useDataStore()
+  const [partitions, setPartitions] = useState<TopicPartition[]>([])
+  const [mode, setMode] = useState('latest')
+  const [position, setPosition] = useState('')
+  const [partition, setPartition] = useState(-1)
+  const [limit, setLimit] = useState(50)
+  const [keyFilter, setKey] = useState('')
+  const [regex, setRegex] = useState(false)
+  const [valueFilter, setValue] = useState('')
+  const [jsonpath, setJsonpath] = useState(false)
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const [selected, setSelected] = useState<KafkaMessage | null>(null)
+  const [tail, setTail] = useState(false)
+  const [produce, setProduce] = useState(false)
+  const [ai, setAI] = useState('')
+  const [aiBusy, setAIBusy] = useState(false)
+  const [presets, setPresets] = useState<Preset[]>([])
+  const [presetName, setPresetName] = useState('')
+  const cursors = useRef<Record<number, string>>({})
+  const bottom = useRef<HTMLDivElement>(null)
+  const list = topic ? (messages[topic] ?? []) : []
+  const options = useMemo<Omit<FetchOptions, 'topic'>>(
+    () => ({
+      partition: partition < 0 ? undefined : partition,
+      limit,
+      offset: mode === 'offset' ? position || '0' : mode === 'timestamp' ? 'earliest' : mode,
+      timestamp: mode === 'timestamp' && position ? new Date(position).getTime() : undefined,
+      keyFilter,
+      keyFilterType: regex ? 'regex' : 'exact',
+      valueFilter,
+      valueFilterType: jsonpath ? 'jsonpath' : 'substring',
+      timestampStart: from || undefined,
+      timestampEnd: to || undefined
+    }),
+    [partition, limit, mode, position, keyFilter, regex, valueFilter, jsonpath, from, to]
+  )
+  const fetch = useCallback(
+    async (extra: Partial<FetchOptions> & { append?: boolean } = {}) => {
+      if (!topic || !cluster) return
+      const data = await fetchMessages(cluster, topic, { ...options, ...extra })
+      cursors.current = { ...useDataStore.getState().messageNextOffsets[topic] }
+      for (const message of data) {
+        const next = BigInt(message.offset) + 1n
+        if (
+          !cursors.current[message.partition] ||
+          next > BigInt(cursors.current[message.partition])
+        )
+          cursors.current[message.partition] = String(next)
+      }
+    },
+    [topic, cluster, options, fetchMessages]
+  )
+  useEffect(() => {
+    if (!cluster || !topic) return
+    let active = true
+    void window.api.topics.partitions(cluster, topic).then((res) => {
+      if (active && res.success && res.data) setPartitions(res.data)
     })
-  }, [activeClusterId, selectedTopicName, partition, offsetMode, pageSize, fetchMessages])
-
+    void window.api.settings.get(`cluster:${cluster}:filters:${topic}`).then((res) => {
+      if (active && res.data) setPresets(JSON.parse(res.data))
+    })
+    cursors.current = {}
+    void fetch()
+    return () => {
+      active = false
+      useDataStore.getState().cancelMessages(topic)
+    }
+  }, [cluster, topic])
   useEffect(() => {
-    doFetch()
-  }, [doFetch])
-
-  useEffect(() => {
-    if (!liveTail || !activeClusterId || !selectedTopicName) return
-
-    const interval = setInterval(() => {
-      if (!liveTailRef.current) return
-      fetchMessages(activeClusterId, selectedTopicName, {
-        partition: partition >= 0 ? partition : undefined,
+    if (!tail) return
+    let alive = true
+    let timer: ReturnType<typeof setTimeout>
+    const poll = async () => {
+      await fetch({
+        offsets: { ...cursors.current },
         offset: 'latest',
-        limit: pageSize
+        timestamp: undefined,
+        append: true
       })
-    }, 2000)
-
-    return () => clearInterval(interval)
-  }, [liveTail, activeClusterId, selectedTopicName, partition, pageSize, fetchMessages])
-
-  const toggleExpand = useCallback((offset: string) => {
-    setExpandedOffset((prev) => (prev === offset ? null : offset))
-  }, [])
-
-  if (!selectedTopicName) {
+      if (alive) {
+        bottom.current?.scrollIntoView({ behavior: 'smooth' })
+        timer = setTimeout(poll, 1500)
+      }
+    }
+    void poll()
+    return () => {
+      alive = false
+      clearTimeout(timer)
+      if (topic) useDataStore.getState().cancelMessages(topic)
+    }
+  }, [tail, fetch])
+  useEffect(() => {
+    const refresh = () => void fetch()
+    window.addEventListener('kafkalens:refresh', refresh)
+    return () => window.removeEventListener('kafkalens:refresh', refresh)
+  }, [fetch])
+  const page = async (backward: boolean) => {
+    const offsets: Record<number, string> = {}
+    for (const p of partitions) {
+      const values = list.filter((m) => m.partition === p.partitionId).map((m) => BigInt(m.offset))
+      if (values.length)
+        offsets[p.partitionId] = String(
+          backward
+            ? values.reduce((a, b) => (a < b ? a : b))
+            : values.reduce((a, b) => (a > b ? a : b)) + 1n
+        )
+      else offsets[p.partitionId] = String(p.logStartOffset)
+    }
+    if (!backward) Object.assign(offsets, useDataStore.getState().messageNextOffsets[topic!] ?? {})
+    cursors.current = {}
+    await fetch({
+      offsets,
+      offset: 'earliest',
+      timestamp: undefined,
+      direction: backward ? 'backward' : 'forward'
+    })
+  }
+  const savePreset = async () => {
+    if (!presetName.trim() || !cluster || !topic) return
+    const next = [...presets.filter((p) => p.name !== presetName), { name: presetName, options }]
+    const result = await window.api.settings.set(
+      `cluster:${cluster}:filters:${topic}`,
+      JSON.stringify(next)
+    )
+    if (result.success) {
+      setPresets(next)
+      setPresetName('')
+    } else addNotification('error', result.error ?? 'Could not save filter')
+  }
+  const applyPreset = (name: string) => {
+    const preset = presets.find((p) => p.name === name)
+    if (!preset) return
+    const p = preset.options
+    setPartition(p.partition ?? -1)
+    setLimit(p.limit ?? 50)
+    setMode(
+      p.timestamp !== undefined
+        ? 'timestamp'
+        : p.offset && /^\d+$/.test(p.offset)
+          ? 'offset'
+          : (p.offset ?? 'latest')
+    )
+    setPosition(
+      p.timestamp !== undefined
+        ? new Date(p.timestamp).toISOString().slice(0, 16)
+        : p.offset && /^\d+$/.test(p.offset)
+          ? p.offset
+          : ''
+    )
+    setKey(p.keyFilter ?? '')
+    setRegex(p.keyFilterType === 'regex')
+    setValue(p.valueFilter ?? '')
+    setJsonpath(p.valueFilterType === 'jsonpath')
+    setFrom(p.timestampStart ?? '')
+    setTo(p.timestampEnd ?? '')
+  }
+  const explain = async () => {
+    if (!selected) return
+    setAIBusy(true)
+    setAI('')
+    const response = await window.api.ai.explainMessage(
+      selected.value,
+      selected.schemaId
+        ? JSON.stringify((await window.api.schema.getById(cluster!, selected.schemaId)).data)
+        : undefined
+    )
+    setAI(response.data?.content ?? response.error ?? 'No response')
+    setAIBusy(false)
+  }
+  if (!topic || !cluster)
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-4 text-text-muted">
-        <Inbox className="h-16 w-16 opacity-30" />
-        <p className="text-lg">Select a topic from the topic list to browse messages</p>
+      <div className="p-12 text-text-muted">
+        Select a connected cluster and a topic to browse messages.
       </div>
     )
-  }
-
   return (
-    <div className="flex h-full flex-col overflow-hidden">
-      {/* Toolbar */}
-      <div className="flex items-center gap-3 border-b border-border bg-surface-1 px-5 py-3">
-        <h1 className="mr-2 text-sm font-semibold text-text-primary">{selectedTopicName}</h1>
-
-        {/* Partition selector */}
-        <div className="relative">
+    <div className="flex h-full flex-col">
+      <div className="border-b border-border p-4 space-y-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <h1 className="font-mono mr-auto">{topic}</h1>
           <select
+            aria-label="Partition"
             value={partition}
             onChange={(e) => setPartition(Number(e.target.value))}
-            className="appearance-none rounded-md border border-border bg-surface-0 py-1.5 pl-3 pr-8 text-xs text-text-secondary focus:border-accent focus:outline-none"
+            className={field}
           >
-            <option value={-1}>All Partitions</option>
+            <option value={-1}>All partitions</option>
             {partitions.map((p) => (
-              <option key={p} value={p}>
-                Partition {p}
+              <option key={p.partitionId} value={p.partitionId}>
+                Partition {p.partitionId}
               </option>
             ))}
           </select>
-          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-text-muted" />
-        </div>
-
-        {/* Offset mode */}
-        <div className="flex rounded-md border border-border">
-          {(['latest', 'earliest', 'custom'] as const).map((mode) => (
-            <button
-              key={mode}
-              onClick={() => setOffsetMode(mode)}
-              className={`px-3 py-1.5 text-xs font-medium capitalize transition-colors first:rounded-l-md last:rounded-r-md ${
-                offsetMode === mode
-                  ? 'bg-accent text-white'
-                  : 'bg-surface-0 text-text-secondary hover:bg-surface-2'
-              }`}
-            >
-              {mode}
-            </button>
-          ))}
-        </div>
-
-        {/* Page size */}
-        <div className="relative">
           <select
-            value={pageSize}
-            onChange={(e) => setPageSize(Number(e.target.value))}
-            className="appearance-none rounded-md border border-border bg-surface-0 py-1.5 pl-3 pr-8 text-xs text-text-secondary focus:border-accent focus:outline-none"
+            aria-label="Offset mode"
+            value={mode}
+            onChange={(e) => {
+              setMode(e.target.value)
+              setPosition('')
+            }}
+            className={field}
           >
-            {PAGE_SIZES.map((s) => (
-              <option key={s} value={s}>
-                {s} msgs
-              </option>
+            {['latest', 'earliest', 'offset', 'timestamp'].map((v) => (
+              <option key={v}>{v}</option>
             ))}
           </select>
-          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-text-muted" />
+          {['offset', 'timestamp'].includes(mode) && (
+            <input
+              aria-label="Seek position"
+              className={field}
+              type={mode === 'timestamp' ? 'datetime-local' : 'number'}
+              min={0}
+              value={position}
+              onChange={(e) => setPosition(e.target.value)}
+            />
+          )}
+          <select
+            aria-label="Page size"
+            value={limit}
+            onChange={(e) => setLimit(Number(e.target.value))}
+            className={field}
+          >
+            {[10, 50, 100, 500].map((v) => (
+              <option key={v}>{v}</option>
+            ))}
+          </select>
+          <button
+            className={button}
+            disabled={messagesLoading}
+            onClick={() => {
+              cursors.current = {}
+              void fetch()
+            }}
+          >
+            Fetch
+          </button>
+          <button className={button} onClick={() => setTail((v) => !v)}>
+            {tail ? 'Stop tail' : 'Live tail'}
+          </button>
+          <button className={button} onClick={() => setProduce(true)}>
+            Produce
+          </button>
         </div>
-
-        <div className="flex-1" />
-
-        {/* Produce Message */}
-        <button
-          onClick={() => setShowProduceModal(true)}
-          className="flex items-center gap-1.5 rounded-md border border-border bg-surface-0 px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-2 hover:text-text-primary transition-colors"
-        >
-          <Send className="h-3 w-3" />
-          Produce
-        </button>
-
-        {/* Live Tail */}
-        <button
-          onClick={() => setLiveTail(!liveTail)}
-          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-            liveTail
-              ? 'bg-success/15 text-success'
-              : 'bg-surface-0 text-text-secondary border border-border hover:bg-surface-2'
-          }`}
-        >
-          <Radio className={`h-3 w-3 ${liveTail ? 'animate-pulse' : ''}`} />
-          Live Tail
-        </button>
-
-        {/* Refresh */}
-        <button
-          onClick={doFetch}
-          className="rounded-md border border-border bg-surface-0 p-1.5 text-text-secondary hover:bg-surface-2 hover:text-text-primary transition-colors"
-        >
-          <RefreshCw className={`h-4 w-4 ${messagesLoading ? 'animate-spin' : ''}`} />
-        </button>
+        <div className="flex gap-2 flex-wrap">
+          <input
+            aria-label="Key filter"
+            placeholder="Key"
+            className={field}
+            value={keyFilter}
+            onChange={(e) => setKey(e.target.value)}
+          />
+          <label className="text-xs flex items-center gap-1">
+            <input type="checkbox" checked={regex} onChange={(e) => setRegex(e.target.checked)} />
+            Regex
+          </label>
+          <input
+            aria-label="Value filter"
+            placeholder={jsonpath ? 'JSONPath, e.g. $.customer.id' : 'Value contains'}
+            className={field}
+            value={valueFilter}
+            onChange={(e) => setValue(e.target.value)}
+          />
+          <label className="text-xs flex items-center gap-1">
+            <input
+              type="checkbox"
+              checked={jsonpath}
+              onChange={(e) => setJsonpath(e.target.checked)}
+            />
+            JSONPath
+          </label>
+          <label className="text-xs">
+            From{' '}
+            <input
+              aria-label="From timestamp"
+              className={field}
+              type="datetime-local"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+            />
+          </label>
+          <label className="text-xs">
+            To{' '}
+            <input
+              aria-label="To timestamp"
+              className={field}
+              type="datetime-local"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+            />
+          </label>
+        </div>
+        <div className="flex gap-2">
+          <select
+            aria-label="Saved filters"
+            className={field}
+            onChange={(e) => applyPreset(e.target.value)}
+            defaultValue=""
+          >
+            <option value="">Saved filters</option>
+            {presets.map((p) => (
+              <option key={p.name}>{p.name}</option>
+            ))}
+          </select>
+          <input
+            aria-label="Filter name"
+            className={field}
+            placeholder="Filter name"
+            value={presetName}
+            onChange={(e) => setPresetName(e.target.value)}
+          />
+          <button className={button} onClick={() => void savePreset()}>
+            Save filter
+          </button>
+          <button className={button} disabled={messagesLoading} onClick={() => void page(true)}>
+            Previous
+          </button>
+          <button className={button} disabled={messagesLoading} onClick={() => void page(false)}>
+            Next
+          </button>
+        </div>
       </div>
-
-      {/* Message table */}
       <div className="flex-1 overflow-auto">
-        <table className="w-full text-sm">
-          <thead className="sticky top-0 z-10">
-            <tr className="border-b border-border bg-surface-1 text-text-secondary">
-              <th className="px-4 py-2.5 text-left font-medium">Offset</th>
-              <th className="px-4 py-2.5 text-left font-medium">Partition</th>
-              <th className="px-4 py-2.5 text-left font-medium">Timestamp</th>
-              <th className="px-4 py-2.5 text-left font-medium">Key</th>
-              <th className="px-4 py-2.5 text-left font-medium">Value</th>
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 bg-surface-1">
+            <tr>
+              {['Offset', 'Partition', 'Timestamp', 'Key', 'Value', 'Format'].map((v) => (
+                <th className="p-3 text-left" key={v}>
+                  {v}
+                </th>
+              ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-border">
-            {messagesLoading && topicMessages.length === 0
-              ? [...Array(8)].map((_, i) => <SkeletonRow key={i} />)
-              : filtered.map((msg) => (
-                  <MessageRow
-                    key={`${msg.partition}-${msg.offset}`}
-                    message={msg}
-                    isExpanded={expandedOffset === `${msg.partition}-${msg.offset}`}
-                    onToggle={() => toggleExpand(`${msg.partition}-${msg.offset}`)}
-                  />
+          <tbody>
+            {messagesLoading && !list.length
+              ? Array.from({ length: 8 }, (_, i) => (
+                  <tr key={i}>
+                    <td colSpan={6} className="p-3">
+                      <div className="h-4 animate-pulse bg-surface-3 rounded" />
+                    </td>
+                  </tr>
+                ))
+              : list.map((m) => (
+                  <tr
+                    key={`${m.partition}:${m.offset}`}
+                    className="border-b border-border hover:bg-surface-2"
+                  >
+                    <td className="p-3">
+                      <button
+                        className="text-accent"
+                        onClick={() => {
+                          setSelected(m)
+                          setAI('')
+                        }}
+                      >
+                        {m.offset}
+                      </button>
+                    </td>
+                    <td>{m.partition}</td>
+                    <td>{new Date(Number(m.timestamp)).toLocaleString()}</td>
+                    <td>{m.key?.slice(0, 50) ?? 'null'}</td>
+                    <td>{m.value.slice(0, 100)}</td>
+                    <td>
+                      {m.valueFormat}
+                      {m.schemaId ? ` #${m.schemaId}` : ''}
+                    </td>
+                  </tr>
                 ))}
-            {!messagesLoading && filtered.length === 0 && (
-              <tr>
-                <td colSpan={5} className="py-12 text-center text-text-muted">
-                  No messages found for this partition.
-                </td>
-              </tr>
-            )}
           </tbody>
         </table>
+        {!messagesLoading && !list.length && (
+          <p className="p-8 text-text-muted">No matching messages in this offset range.</p>
+        )}
+        <div ref={bottom} />
       </div>
-
-      {/* Produce Message Modal */}
-      {showProduceModal && (
-        <ProduceMessageModal
-          topic={selectedTopicName}
-          clusterId={activeClusterId ?? ''}
-          onClose={() => setShowProduceModal(false)}
-          onProduce={produceMessage}
-          addNotification={addNotification}
-          onRefresh={doFetch}
+      {selected && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Message details"
+          className="fixed inset-8 z-50 overflow-auto rounded-xl border border-border bg-surface-1 p-6 space-y-4"
+        >
+          <div className="flex justify-between">
+            <h2>
+              Partition {selected.partition} · offset {selected.offset}
+            </h2>
+            <button className={button} onClick={() => setSelected(null)}>
+              Close
+            </button>
+          </div>
+          {selected.decodeError && <p className="text-warning">{selected.decodeError}</p>}
+          <div className="flex gap-2">
+            <button
+              className={button}
+              onClick={() => void navigator.clipboard.writeText(selected.value)}
+            >
+              Copy value
+            </button>
+            <button className={button} disabled={aiBusy} onClick={() => void explain()}>
+              Explain with AI
+            </button>
+            {aiBusy && (
+              <button className={button} onClick={() => void window.api.ai.cancel()}>
+                Cancel AI
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-text-secondary">Key: {selected.key ?? 'null'}</p>
+          <JsonViewer message={selected} />
+          <pre className="text-xs">{JSON.stringify(selected.headers, null, 2)}</pre>
+          {ai && <AIMarkdown content={ai} />}
+        </div>
+      )}
+      {produce && (
+        <Producer
+          cluster={cluster}
+          topic={topic}
+          onClose={() => setProduce(false)}
+          onSent={() => void fetch()}
         />
       )}
     </div>
   )
 }
-
-function ProduceMessageModal({
+function Producer({
+  cluster,
   topic,
-  clusterId,
   onClose,
-  onProduce,
-  addNotification,
-  onRefresh
+  onSent
 }: {
+  cluster: string
   topic: string
-  clusterId: string
   onClose: () => void
-  onProduce: (clusterId: string, opts: {
-    topic: string
-    key?: string | null
-    value: string
-    partition?: number
-    headers?: Record<string, string>
-  }) => Promise<boolean>
-  addNotification: (type: 'success' | 'error' | 'warning' | 'info', message: string) => void
-  onRefresh: () => void
+  onSent: () => void
 }) {
   const [key, setKey] = useState('')
   const [value, setValue] = useState('')
-  const [headers, setHeaders] = useState<{ key: string; value: string }[]>([])
-  const [targetPartition, setTargetPartition] = useState('')
-  const [sending, setSending] = useState(false)
-
-  const addHeader = () => setHeaders((h) => [...h, { key: '', value: '' }])
-
-  const updateHeader = (idx: number, field: 'key' | 'value', val: string) => {
-    setHeaders((h) => h.map((item, i) => (i === idx ? { ...item, [field]: val } : item)))
-  }
-
-  const removeHeader = (idx: number) => {
-    setHeaders((h) => h.filter((_, i) => i !== idx))
-  }
-
-  const handleSend = async () => {
-    if (!value.trim()) {
-      addNotification('error', 'Message value cannot be empty')
-      return
+  const [headers, setHeaders] = useState('{}')
+  const [partition, setPartition] = useState('')
+  const [format, setFormat] = useState<PayloadFormat>('json')
+  const [schema, setSchema] = useState('')
+  const [name, setName] = useState('')
+  const [templates, setTemplates] = useState<Template[]>([])
+  const [busy, setBusy] = useState(false)
+  const notify = useUIStore((s) => s.addNotification)
+  const produce = useDataStore((s) => s.produceMessage)
+  const storage = `cluster:${cluster}:templates:${topic}`
+  useEffect(() => {
+    void window.api.settings.get(storage).then((res) => {
+      if (res.data) setTemplates(JSON.parse(res.data))
+    })
+  }, [storage])
+  const options = (): ProduceOptions => {
+    const parsed: unknown = JSON.parse(headers)
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed) ||
+      Object.values(parsed).some((v) => typeof v !== 'string')
+    )
+      throw new Error('Headers must be a JSON object containing string values')
+    return {
+      topic,
+      key: key || null,
+      value,
+      partition: partition ? Number(partition) : undefined,
+      headers: parsed as Record<string, string>,
+      valueFormat: format,
+      schemaId: schema ? Number(schema) : undefined
     }
-
-    setSending(true)
+  }
+  const send = async () => {
+    setBusy(true)
     try {
-      const hdrs: Record<string, string> = {}
-      for (const h of headers) {
-        if (h.key.trim()) hdrs[h.key.trim()] = h.value
-      }
-
-      const success = await onProduce(clusterId, {
-        topic,
-        key: key.trim() || null,
-        value: value.trim(),
-        partition: targetPartition ? parseInt(targetPartition, 10) : undefined,
-        headers: Object.keys(hdrs).length > 0 ? hdrs : undefined
-      })
-
-      if (success) {
-        addNotification('success', `Message produced to ${topic}`)
+      if (await produce(cluster, options())) {
+        notify('success', 'Message produced')
+        onSent()
         onClose()
-        onRefresh()
-      } else {
-        addNotification('error', 'Failed to produce message')
       }
-    } catch {
-      addNotification('error', 'Failed to produce message')
+    } catch (e) {
+      notify('error', e instanceof Error ? e.message : 'Could not produce')
     } finally {
-      setSending(false)
+      setBusy(false)
     }
   }
-
+  const save = async () => {
+    try {
+      const next = [...templates.filter((t) => t.name !== name), { name, message: options() }]
+      const res = await window.api.settings.set(storage, JSON.stringify(next))
+      if (!res.success) throw new Error(res.error)
+      setTemplates(next)
+      setName('')
+    } catch (e) {
+      notify('error', e instanceof Error ? e.message : 'Could not save template')
+    }
+  }
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
       <div
-        className="w-full max-w-xl rounded-xl border border-border bg-surface-1 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Produce message"
+        className="w-full max-w-2xl rounded-xl bg-surface-1 border border-border p-6 space-y-3"
       >
-        <div className="flex items-center justify-between border-b border-border px-6 py-4">
-          <h2 className="text-sm font-semibold text-text-primary">Produce Message</h2>
-          <button onClick={onClose} className="text-text-muted hover:text-text-primary transition-colors">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="flex flex-col gap-4 px-6 py-5">
-          <div className="flex items-center gap-2 text-xs text-text-muted">
-            <span className="text-text-secondary">Topic:</span>
-            <span className="font-mono text-accent">{topic}</span>
-          </div>
-
-          {/* Key */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-text-secondary">Key</label>
-            <input
-              type="text"
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              placeholder="Message key (optional)"
-              className="rounded-md border border-border bg-surface-0 px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
-            />
-          </div>
-
-          {/* Value */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-text-secondary">Value</label>
-            <textarea
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder='{"key": "value"}'
-              rows={8}
-              className="rounded-md border border-border bg-surface-0 px-3 py-2 font-mono text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none resize-none"
-            />
-          </div>
-
-          {/* Target Partition */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-text-secondary">Target Partition (optional)</label>
-            <input
-              type="number"
-              value={targetPartition}
-              onChange={(e) => setTargetPartition(e.target.value)}
-              placeholder="Auto-assign"
-              min={0}
-              className="w-40 rounded-md border border-border bg-surface-0 px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
-            />
-          </div>
-
-          {/* Headers */}
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-medium text-text-secondary">Headers</label>
-              <button
-                onClick={addHeader}
-                className="flex items-center gap-1 text-xs text-accent hover:text-accent/80 transition-colors"
-              >
-                <Plus className="h-3 w-3" />
-                Add Header
-              </button>
-            </div>
-            {headers.map((h, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={h.key}
-                  onChange={(e) => updateHeader(i, 'key', e.target.value)}
-                  placeholder="Header key"
-                  className="flex-1 rounded-md border border-border bg-surface-0 px-3 py-1.5 text-xs text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
-                />
-                <input
-                  type="text"
-                  value={h.value}
-                  onChange={(e) => updateHeader(i, 'value', e.target.value)}
-                  placeholder="Header value"
-                  className="flex-1 rounded-md border border-border bg-surface-0 px-3 py-1.5 text-xs text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
-                />
-                <button
-                  onClick={() => removeHeader(i)}
-                  className="text-text-muted hover:text-danger transition-colors"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex justify-end gap-3 border-t border-border px-6 py-4">
-          <button
-            onClick={onClose}
-            className="rounded-md border border-border bg-surface-0 px-4 py-2 text-xs font-medium text-text-secondary hover:bg-surface-2 transition-colors"
+        <h2>Produce to {topic}</h2>
+        <select
+          aria-label="Message template"
+          className={field}
+          defaultValue=""
+          onChange={(e) => {
+            const t = templates.find((t) => t.name === e.target.value)
+            if (t) {
+              setKey(t.message.key ?? '')
+              setValue(t.message.value)
+              setHeaders(JSON.stringify(t.message.headers ?? {}, null, 2))
+              setPartition(String(t.message.partition ?? ''))
+              setFormat(t.message.valueFormat ?? 'json')
+              setSchema(String(t.message.schemaId ?? ''))
+            }
+          }}
+        >
+          <option value="">Load template</option>
+          {templates.map((t) => (
+            <option key={t.name}>{t.name}</option>
+          ))}
+        </select>
+        <div className="flex gap-2">
+          <input
+            aria-label="Message key"
+            placeholder="Key"
+            className={field}
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+          />
+          <input
+            aria-label="Target partition"
+            placeholder="Partition (automatic)"
+            type="number"
+            min={0}
+            className={field}
+            value={partition}
+            onChange={(e) => setPartition(e.target.value)}
+          />
+          <select
+            aria-label="Payload format"
+            className={field}
+            value={format}
+            onChange={(e) => setFormat(e.target.value as PayloadFormat)}
           >
+            {['json', 'string', 'avro', 'binary'].map((v) => (
+              <option key={v}>{v}</option>
+            ))}
+          </select>
+        </div>
+        {format === 'avro' && (
+          <input
+            aria-label="Schema ID"
+            placeholder="Schema Registry ID"
+            type="number"
+            min={1}
+            className={field}
+            value={schema}
+            onChange={(e) => setSchema(e.target.value)}
+          />
+        )}
+        <textarea
+          aria-label="Message value"
+          className={field + ' w-full font-mono'}
+          rows={10}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+        />
+        <textarea
+          aria-label="Message headers"
+          className={field + ' w-full font-mono'}
+          rows={3}
+          value={headers}
+          onChange={(e) => setHeaders(e.target.value)}
+        />
+        <div className="flex gap-2">
+          <input
+            aria-label="Template name"
+            className={field}
+            placeholder="Template name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <button className={button} disabled={!name.trim()} onClick={() => void save()}>
+            Save template
+          </button>
+          <button className={button + ' ml-auto'} onClick={onClose}>
             Cancel
           </button>
-          <button
-            onClick={handleSend}
-            disabled={sending || !value.trim()}
-            className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-xs font-medium text-white hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {sending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
-            {sending ? 'Sending...' : 'Send Message'}
+          <button className={button} disabled={busy} onClick={() => void send()}>
+            {busy ? 'Sending…' : 'Produce'}
           </button>
         </div>
       </div>
     </div>
-  )
-}
-
-function MessageRow({
-  message,
-  isExpanded,
-  onToggle
-}: {
-  message: KafkaMessage
-  isExpanded: boolean
-  onToggle: () => void
-}) {
-  const [copiedField, setCopiedField] = useState<string | null>(null)
-  const [aiResponse, setAiResponse] = useState<string | null>(null)
-  const [aiLoading, setAiLoading] = useState(false)
-
-  const copyToClipboard = useCallback((text: string, field: string) => {
-    navigator.clipboard.writeText(text)
-    setCopiedField(field)
-    setTimeout(() => setCopiedField(null), 1500)
-  }, [])
-
-  const prettyValue = useMemo(() => {
-    try {
-      return JSON.stringify(JSON.parse(message.value), null, 2)
-    } catch {
-      return message.value
-    }
-  }, [message.value])
-
-  const highlightedValue = useMemo(() => syntaxHighlightJSON(prettyValue), [prettyValue])
-
-  const handleExplainAI = async () => {
-    setAiLoading(true)
-    setAiResponse(null)
-    try {
-      const { checkAIConfigured } = await import('@/lib/ai-guard')
-      const check = await checkAIConfigured()
-      if (!check.ok) { setAiResponse(check.message!); return }
-      const result = await window.api.ai.explainMessage(message.value, undefined)
-      if (result?.success && result.data) {
-        const data = result.data as string | { content: string }
-        setAiResponse(typeof data === 'string' ? data : data.content)
-      } else {
-        setAiResponse(result?.error ?? 'AI returned an empty response.')
-      }
-    } catch (err) {
-      setAiResponse(`Error: ${err instanceof Error ? err.message : 'Failed to get AI explanation'}`)
-    } finally {
-      setAiLoading(false)
-    }
-  }
-
-  return (
-    <>
-      <tr
-        className={`cursor-pointer transition-colors ${
-          isExpanded ? 'bg-surface-2' : 'bg-surface-0 hover:bg-surface-1'
-        }`}
-        onClick={onToggle}
-      >
-        <td className="px-4 py-2.5 font-mono text-xs text-text-secondary">{message.offset}</td>
-        <td className="px-4 py-2.5 text-text-secondary">{message.partition}</td>
-        <td className="px-4 py-2.5 text-text-secondary">{formatTimestamp(message.timestamp)}</td>
-        <td className="px-4 py-2.5 font-mono text-xs text-accent">
-          {message.key ?? <span className="italic text-text-muted">null</span>}
-        </td>
-        <td className="max-w-md px-4 py-2.5 font-mono text-xs text-text-muted">
-          {truncate(message.value.replace(/\s+/g, ' '), 80)}
-        </td>
-      </tr>
-
-      {isExpanded && (
-        <tr className="bg-surface-1">
-          <td colSpan={5} className="p-0">
-            <div className="flex flex-col gap-4 border-t border-border px-6 py-5">
-              {/* Metadata */}
-              <div className="flex gap-6 text-xs text-text-muted">
-                <span>
-                  <span className="text-text-secondary">Topic:</span> {message.topic}
-                </span>
-                <span>
-                  <span className="text-text-secondary">Partition:</span> {message.partition}
-                </span>
-                <span>
-                  <span className="text-text-secondary">Offset:</span> {message.offset}
-                </span>
-                <span>
-                  <span className="text-text-secondary">Timestamp:</span>{' '}
-                  {new Date(message.timestamp).toISOString()}
-                </span>
-                <span>
-                  <span className="text-text-secondary">Format:</span> {message.valueFormat}
-                </span>
-              </div>
-
-              {/* Key */}
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-text-secondary">Key</span>
-                  <CopyButton
-                    text={message.key ?? ''}
-                    field="key"
-                    copiedField={copiedField}
-                    onCopy={copyToClipboard}
-                  />
-                </div>
-                <pre className="overflow-auto rounded-md border border-border bg-surface-0 px-4 py-3 font-mono text-xs text-text-primary">
-                  {message.key ?? 'null'}
-                </pre>
-              </div>
-
-              {/* Value */}
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-text-secondary">Value</span>
-                  <CopyButton
-                    text={prettyValue}
-                    field="value"
-                    copiedField={copiedField}
-                    onCopy={copyToClipboard}
-                  />
-                </div>
-                <pre
-                  className="max-h-80 overflow-auto rounded-md border border-border bg-surface-0 px-4 py-3 font-mono text-xs leading-relaxed"
-                  dangerouslySetInnerHTML={{ __html: highlightedValue }}
-                />
-              </div>
-
-              {/* Headers */}
-              {Object.keys(message.headers).length > 0 && (
-                <div className="flex flex-col gap-1.5">
-                  <span className="text-xs font-medium text-text-secondary">Headers</span>
-                  <div className="overflow-hidden rounded-md border border-border">
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="border-b border-border bg-surface-2">
-                          <th className="px-3 py-1.5 text-left font-medium text-text-secondary">Key</th>
-                          <th className="px-3 py-1.5 text-left font-medium text-text-secondary">Value</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border">
-                        {Object.entries(message.headers).map(([k, v]) => (
-                          <tr key={k} className="bg-surface-0">
-                            <td className="px-3 py-1.5 font-mono text-accent">{k}</td>
-                            <td className="px-3 py-1.5 font-mono text-text-primary">{v}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              {/* AI Explain */}
-              <div className="flex flex-col gap-3">
-                <div className="flex justify-end">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      handleExplainAI()
-                    }}
-                    disabled={aiLoading}
-                    className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-4 py-2 text-xs font-medium text-text-secondary hover:border-accent hover:text-accent transition-colors disabled:opacity-50"
-                  >
-                    {aiLoading ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Sparkles className="h-4 w-4" />
-                    )}
-                    {aiLoading ? 'Analyzing...' : 'Explain with AI'}
-                  </button>
-                </div>
-
-                {(aiLoading || aiResponse) && (
-                  <div className="rounded-md border border-border bg-surface-0 px-4 py-3">
-                    {aiLoading ? (
-                      <div className="flex items-center gap-2 text-xs text-text-muted">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        Analyzing message content...
-                      </div>
-                    ) : (
-                      <div className="whitespace-pre-wrap text-xs leading-relaxed text-text-primary">
-                        {aiResponse}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          </td>
-        </tr>
-      )}
-    </>
-  )
-}
-
-function CopyButton({
-  text,
-  field,
-  copiedField,
-  onCopy
-}: {
-  text: string
-  field: string
-  copiedField: string | null
-  onCopy: (text: string, field: string) => void
-}) {
-  const isCopied = copiedField === field
-  return (
-    <button
-      onClick={(e) => {
-        e.stopPropagation()
-        onCopy(text, field)
-      }}
-      className="flex items-center gap-1 text-xs text-text-muted hover:text-text-primary transition-colors"
-    >
-      {isCopied ? (
-        <>
-          <Check className="h-3 w-3 text-success" />
-          <span className="text-success">Copied</span>
-        </>
-      ) : (
-        <>
-          <Copy className="h-3 w-3" />
-          Copy
-        </>
-      )}
-    </button>
   )
 }

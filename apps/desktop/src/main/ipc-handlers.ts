@@ -1,525 +1,295 @@
-import { ipcMain, app } from 'electron'
+import { ipcMain, app, dialog } from 'electron'
+import { z } from 'zod'
+import { updateService } from './services/update-service'
 import { kafkaService } from './services/kafka-service'
 import { schemaService } from './services/schema-service'
+import { payloadService } from './services/payload-service'
 import { aiService } from './services/ai-service'
 import { storeService } from './services/store-service'
-
-type IpcResult<T = unknown> =
-  | { success: true; data: T }
-  | { success: false; error: string }
-
-function wrapError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-function registerClusterHandlers(): void {
-  ipcMain.handle('cluster:test-connection', async (_event, config) => {
+import {
+  clusterInput,
+  createTopicInput,
+  offsetInput,
+  fetchInput,
+  produceInput,
+  aiInput,
+  name,
+  topicName
+} from './lib/validation'
+const text = z.string()
+const integer = z.number().int().nonnegative()
+const configs = z.record(z.string(), z.string())
+function handle<A extends unknown[], T>(
+  channel: string,
+  input: z.ZodType<A>,
+  fn: (...args: A) => T | Promise<T>
+): void {
+  ipcMain.handle(channel, async (event, ...args: unknown[]) => {
     try {
-      const data = await kafkaService.testConnection(config)
-      return { success: true, data } satisfies IpcResult
+      const url = event.senderFrame?.url ?? ''
+      const dev = process.env.ELECTRON_RENDERER_URL
+      if (
+        event.senderFrame !== event.sender.mainFrame ||
+        !(url.startsWith('file:') || (dev && new URL(url).origin === new URL(dev).origin))
+      )
+        throw new Error('Request rejected from an untrusted window')
+      return { success: true, data: await fn(...input.parse(args)) }
     } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('cluster:connect', async (_event, clusterId, config) => {
-    try {
-      const data = await kafkaService.connect(clusterId, config)
-
-      if (config.schemaRegistryUrl) {
-        schemaService.configure(clusterId, {
-          url: config.schemaRegistryUrl,
-          username: config.schemaRegistryAuth?.username ?? config.schemaRegistryUsername,
-          password: config.schemaRegistryAuth?.password ?? config.schemaRegistryPassword
-        })
-      }
-
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('cluster:disconnect', async (_event, clusterId) => {
-    try {
-      const data = await kafkaService.disconnect(clusterId)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('cluster:is-connected', async (_event, clusterId) => {
-    try {
-      const data = kafkaService.isConnected(clusterId)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('cluster:list', async () => {
-    try {
-      const data = storeService.getClusters()
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('cluster:save', async (_event, cluster) => {
-    try {
-      const data = storeService.saveCluster(cluster)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('cluster:update', async (_event, id, updates) => {
-    try {
-      const data = storeService.updateCluster(id, updates)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('cluster:delete', async (_event, id) => {
-    try {
-      storeService.deleteCluster(id)
-      await kafkaService.disconnect(id)
-      return { success: true, data: undefined } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-}
-
-function registerTopicHandlers(): void {
-  ipcMain.handle('topics:list', async (_event, clusterId) => {
-    try {
-      const data = await kafkaService.listTopics(clusterId)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('topics:metadata', async (_event, clusterId, topic) => {
-    try {
-      const data = await kafkaService.getTopicMetadata(clusterId, topic)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('topics:config', async (_event, clusterId, topic) => {
-    try {
-      const data = await kafkaService.getTopicConfig(clusterId, topic)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('topics:create', async (_event, clusterId, opts) => {
-    try {
-      const data = await kafkaService.createTopic(clusterId, opts)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('topics:delete', async (_event, clusterId, topic) => {
-    try {
-      const data = await kafkaService.deleteTopic(clusterId, topic)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('topics:alter-config', async (_event, clusterId, topic, configs) => {
-    try {
-      const data = await kafkaService.alterTopicConfig(clusterId, topic, configs)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('topics:partitions', async (_event, clusterId, topic) => {
-    try {
-      const data = await kafkaService.getPartitions(clusterId, topic)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-}
-
-function registerMessageHandlers(): void {
-  ipcMain.handle('messages:fetch', async (_event, clusterId, opts) => {
-    try {
-      const data = await kafkaService.fetchMessages(clusterId, opts)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('messages:produce', async (_event, clusterId, opts) => {
-    try {
-      const data = await kafkaService.produceMessage(clusterId, opts)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-}
-
-function registerConsumerGroupHandlers(): void {
-  ipcMain.handle('consumer-groups:list', async (_event, clusterId) => {
-    try {
-      const data = await kafkaService.listConsumerGroups(clusterId)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('consumer-groups:describe', async (_event, clusterId, groupId) => {
-    try {
-      const data = await kafkaService.describeConsumerGroup(clusterId, groupId)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('consumer-groups:offsets', async (_event, clusterId, groupId) => {
-    try {
-      const data = await kafkaService.getConsumerGroupOffsets(clusterId, groupId)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle(
-    'consumer-groups:reset-offsets',
-    async (_event, clusterId, groupId, topic, offsetSpec) => {
-      try {
-        const data = await kafkaService.resetConsumerGroupOffsets(
-          clusterId,
-          groupId,
-          topic,
-          offsetSpec
-        )
-        return { success: true, data } satisfies IpcResult
-      } catch (error) {
-        return { success: false, error: wrapError(error) } satisfies IpcResult
+      return {
+        success: false,
+        error:
+          error instanceof z.ZodError
+            ? error.issues.map((i) => i.message).join('; ')
+            : error instanceof Error
+              ? error.message
+              : 'Operation failed. Try again.'
       }
     }
-  )
-
-  ipcMain.handle('consumer-groups:delete', async (_event, clusterId, groupId) => {
-    try {
-      const data = await kafkaService.deleteConsumerGroup(clusterId, groupId)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
   })
 }
-
-function registerBrokerHandlers(): void {
-  ipcMain.handle('brokers:list', async (_event, clusterId) => {
-    try {
-      const data = await kafkaService.listBrokers(clusterId)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('brokers:config', async (_event, clusterId, brokerId) => {
-    try {
-      const data = await kafkaService.describeBrokerConfig(clusterId, brokerId)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-}
-
-function registerSchemaHandlers(): void {
-  ipcMain.handle('schema:configure', async (_event, clusterId, config) => {
-    try {
-      const data = await schemaService.configure(clusterId, config)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('schema:subjects', async (_event, clusterId) => {
-    try {
-      const data = await schemaService.listSubjects(clusterId)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('schema:versions', async (_event, clusterId, subject) => {
-    try {
-      const data = await schemaService.getVersions(clusterId, subject)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('schema:get', async (_event, clusterId, subject, version) => {
-    try {
-      const data = await schemaService.getSchema(clusterId, subject, version)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('schema:get-by-id', async (_event, clusterId, id) => {
-    try {
-      const data = await schemaService.getSchemaById(clusterId, id)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('schema:compatibility', async (_event, clusterId, subject) => {
-    try {
-      const data = await schemaService.getCompatibility(clusterId, subject)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle(
-    'schema:check-compatibility',
-    async (_event, clusterId, subject, schema, schemaType) => {
-      try {
-        const data = await schemaService.checkCompatibility(
-          clusterId,
-          subject,
-          schema,
-          schemaType
-        )
-        return { success: true, data } satisfies IpcResult
-      } catch (error) {
-        return { success: false, error: wrapError(error) } satisfies IpcResult
-      }
-    }
-  )
-
-  ipcMain.handle(
-    'schema:register',
-    async (_event, clusterId, subject, schema, schemaType) => {
-      try {
-        const data = await schemaService.registerSchema(clusterId, subject, schema, schemaType)
-        return { success: true, data } satisfies IpcResult
-      } catch (error) {
-        return { success: false, error: wrapError(error) } satisfies IpcResult
-      }
-    }
-  )
-
-  ipcMain.handle('schema:delete-version', async (_event, clusterId, subject, version) => {
-    try {
-      const data = await schemaService.deleteSchemaVersion(clusterId, subject, version)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-}
-
-function registerAIHandlers(): void {
-  ipcMain.handle('ai:configure', async (_event, config) => {
-    try {
-      aiService.configure(config)
-      return { success: true, data: undefined } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('ai:is-configured', async () => {
-    try {
-      const data = aiService.isConfigured()
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('ai:explain-message', async (_event, payload, schema?) => {
-    try {
-      const data = await aiService.explainMessage(payload, schema)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle(
-    'ai:analyze-dlq',
-    async (_event, exceptionClass, exceptionMessage, payload) => {
-      try {
-        const data = await aiService.analyzeDLQRootCause(exceptionClass, exceptionMessage, payload)
-        return { success: true, data } satisfies IpcResult
-      } catch (error) {
-        return { success: false, error: wrapError(error) } satisfies IpcResult
-      }
-    }
-  )
-
-  ipcMain.handle('ai:advise-topic', async (_event, topicName, config, metrics) => {
-    try {
-      const data = await aiService.adviseTopicConfig(topicName, config, metrics)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('ai:explain-schema-diff', async (_event, subject, before, after) => {
-    try {
-      const data = await aiService.explainSchemaDiff(subject, before, after)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('ai:cluster-health', async (_event, data) => {
-    try {
-      const result = await aiService.summarizeClusterHealth(data)
-      return { success: true, data: result } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-}
-
-function registerSettingsHandlers(): void {
-  ipcMain.handle('settings:get', async (_event, key) => {
-    try {
-      const data = storeService.getSetting(key)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('settings:set', async (_event, key, value) => {
-    try {
-      storeService.setSetting(key, value)
-      return { success: true, data: undefined } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('settings:get-ai', async () => {
-    try {
-      const data = storeService.getAISettings()
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('settings:save-ai', async (_event, settings) => {
-    try {
-      storeService.saveAISettings(settings)
-      return { success: true, data: undefined } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('favorites:list', async (_event, clusterId) => {
-    try {
-      const data = storeService.getFavorites(clusterId)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('favorites:add', async (_event, clusterId, topic) => {
-    try {
-      storeService.addFavorite(clusterId, topic)
-      return { success: true, data: undefined } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('favorites:remove', async (_event, clusterId, topic) => {
-    try {
-      storeService.removeFavorite(clusterId, topic)
-      return { success: true, data: undefined } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('dlq:mark-reviewed', async (_event, clusterId, topic, partition, offset) => {
-    try {
-      storeService.markDLQReviewed(clusterId, topic, partition, offset)
-      return { success: true, data: undefined } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-
-  ipcMain.handle('dlq:is-reviewed', async (_event, clusterId, topic, partition, offset) => {
-    try {
-      const data = storeService.isDLQReviewed(clusterId, topic, partition, offset)
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-}
-
-function registerAppHandlers(): void {
-  ipcMain.handle('app:version', async () => {
-    try {
-      const data = app.getVersion()
-      return { success: true, data } satisfies IpcResult
-    } catch (error) {
-      return { success: false, error: wrapError(error) } satisfies IpcResult
-    }
-  })
-}
-
 export function registerAllIpcHandlers(): void {
-  registerClusterHandlers()
-  registerTopicHandlers()
-  registerMessageHandlers()
-  registerConsumerGroupHandlers()
-  registerBrokerHandlers()
-  registerSchemaHandlers()
-  registerAIHandlers()
-  registerSettingsHandlers()
-  registerAppHandlers()
+  handle('cluster:test-connection', z.tuple([clusterInput]), (config) =>
+    kafkaService.testConnection(config)
+  )
+  handle('cluster:connect', z.tuple([name, clusterInput]), async (id, config) => {
+    const result = await kafkaService.connect(id, config)
+    payloadService.clear(id)
+    schemaService.clear(id)
+    if (result.success && config.schemaRegistryUrl)
+      schemaService.configure(id, { url: config.schemaRegistryUrl, ...config.schemaRegistryAuth })
+    return result
+  })
+  handle('cluster:disconnect', z.tuple([name]), async (id) => {
+    schemaService.clear(id)
+    await kafkaService.disconnect(id)
+  })
+  handle('cluster:is-connected', z.tuple([name]), (id) => kafkaService.isConnected(id))
+  handle('cluster:list', z.tuple([]), () => storeService.getClusters())
+  handle('cluster:save', z.tuple([clusterInput]), (config) => storeService.saveCluster(config))
+  handle('cluster:update', z.tuple([name, clusterInput.partial()]), (id, updates) =>
+    storeService.updateCluster(id, updates)
+  )
+  handle('cluster:delete', z.tuple([name]), async (id) => {
+    await kafkaService.disconnect(id)
+    schemaService.clear(id)
+    storeService.deleteCluster(id)
+  })
+  handle('topics:list', z.tuple([name]), (id) => kafkaService.listTopics(id))
+  handle('topics:metadata', z.tuple([name, topicName]), (id, topic) =>
+    kafkaService.getTopicMetadata(id, topic)
+  )
+  handle('topics:partitions', z.tuple([name, topicName]), (id, topic) =>
+    kafkaService.getPartitions(id, topic)
+  )
+  handle('topics:config', z.tuple([name, topicName]), (id, topic) =>
+    kafkaService.getTopicConfig(id, topic)
+  )
+  handle('topics:create', z.tuple([name, createTopicInput]), (id, opts) =>
+    kafkaService.createTopic(id, opts)
+  )
+  handle('topics:delete', z.tuple([name, topicName]), (id, topic) =>
+    kafkaService.deleteTopic(id, topic)
+  )
+  handle('topics:alter-config', z.tuple([name, topicName, configs]), (id, topic, values) =>
+    kafkaService.alterTopicConfig(id, topic, values)
+  )
+  handle('messages:page', z.tuple([name, fetchInput]), (id, opts) =>
+    kafkaService.fetchMessagePage(id, opts)
+  )
+  handle('messages:fetch', z.tuple([name, fetchInput]), (id, opts) =>
+    kafkaService.fetchMessages(id, opts)
+  )
+  handle('messages:cancel', z.tuple([name]), (id) => kafkaService.cancelRead(id))
+  handle('messages:produce', z.tuple([name, produceInput]), (id, opts) =>
+    kafkaService.produceMessage(id, opts)
+  )
+  handle('consumer-groups:list', z.tuple([name]), (id) => kafkaService.listConsumerGroups(id))
+  handle('consumer-groups:describe', z.tuple([name, name]), (id, group) =>
+    kafkaService.describeConsumerGroup(id, group)
+  )
+  handle('consumer-groups:offsets', z.tuple([name, name]), (id, group) =>
+    kafkaService.getConsumerGroupOffsets(id, group)
+  )
+  handle(
+    'consumer-groups:reset-offsets',
+    z.tuple([name, name, topicName, offsetInput]),
+    (id, group, topic, spec) => kafkaService.resetConsumerGroupOffsets(id, group, topic, spec)
+  )
+  handle('consumer-groups:delete', z.tuple([name, name]), (id, group) =>
+    kafkaService.deleteConsumerGroup(id, group)
+  )
+  handle('brokers:list', z.tuple([name]), (id) => kafkaService.listBrokers(id))
+  handle('brokers:config', z.tuple([name, integer]), async (id, broker) => {
+    const values = await kafkaService.describeBrokerConfig(id, broker)
+    storeService.recordConfig(id, broker, values)
+    return values
+  })
+  handle('brokers:history', z.tuple([name, integer]), (id, broker) =>
+    storeService.configHistory(id, broker)
+  )
+  handle('brokers:cluster-config', z.tuple([name]), (id) => kafkaService.describeClusterConfig(id))
+  handle('brokers:partitions', z.tuple([name, integer]), async (id, broker) => {
+    const topics = await kafkaService.listTopics(id)
+    const result = []
+    for (const topic of topics) {
+      for (const partition of await kafkaService.getPartitions(id, topic.name))
+        if (partition.replicas.includes(broker))
+          result.push({
+            topic: topic.name,
+            partition,
+            role: partition.leader === broker ? 'leader' : 'replica'
+          })
+    }
+    return result
+  })
+  handle(
+    'schema:configure',
+    z.tuple([
+      name,
+      z.object({ url: z.string().url(), username: text.optional(), password: text.optional() })
+    ]),
+    (id, config) => {
+      payloadService.clear(id)
+      schemaService.configure(id, config)
+    }
+  )
+  handle('schema:subjects', z.tuple([name]), (id) => schemaService.listSubjects(id))
+  handle('schema:versions', z.tuple([name, name]), (id, subject) =>
+    schemaService.getVersions(id, subject)
+  )
+  handle(
+    'schema:get',
+    z.tuple([name, name, z.union([integer, z.literal('latest')])]),
+    (id, subject, version) => schemaService.getSchema(id, subject, version)
+  )
+  handle('schema:get-by-id', z.tuple([name, integer]), (id, schema) =>
+    schemaService.getSchemaById(id, schema)
+  )
+  handle('schema:compatibility', z.tuple([name, name]), (id, subject) =>
+    schemaService.getCompatibility(id, subject)
+  )
+  const schemaArgs = z.tuple([
+    name,
+    name,
+    text.min(1).max(1_000_000),
+    z.enum(['AVRO', 'PROTOBUF', 'JSON'])
+  ])
+  handle('schema:check-compatibility', schemaArgs, (id, subject, schema, type) =>
+    schemaService.checkCompatibility(id, subject, schema, type)
+  )
+  handle('schema:register', schemaArgs, async (id, subject, schema, type) => {
+    let exists = true
+    try {
+      await schemaService.getVersions(id, subject)
+    } catch (error) {
+      if ((error as { status?: number }).status === 404) exists = false
+      else throw error
+    }
+    if (exists) {
+      const check = await schemaService.checkCompatibility(id, subject, schema, type)
+      if (!check.is_compatible)
+        throw new Error('Schema is incompatible with the subject rules. Fix it before registering.')
+    }
+    return schemaService.registerSchema(id, subject, schema, type)
+  })
+  handle(
+    'schema:delete-version',
+    z.tuple([name, name, z.union([integer, z.literal('latest')])]),
+    (id, subject, version) => schemaService.deleteSchemaVersion(id, subject, version)
+  )
+  handle('ai:configure', z.tuple([aiInput]), (config) => aiService.configure(config))
+  handle('ai:is-configured', z.tuple([]), () => aiService.isConfigured())
+  handle('ai:explain-message', z.tuple([text, text.optional()]), (payload, schema?) =>
+    aiService.explainMessage(payload, schema)
+  )
+  handle('ai:analyze-dlq', z.tuple([text, text, text]), (kind, message, payload) =>
+    aiService.analyzeDLQRootCause(kind, message, payload)
+  )
+  handle(
+    'ai:advise-topic',
+    z.tuple([
+      name,
+      configs,
+      z.object({
+        messageCount: z.number(),
+        partitions: z.number(),
+        consumerLag: z.number(),
+        partitionCounts: z.record(z.string(), z.number()).optional()
+      })
+    ]),
+    (topic, config, metrics) => aiService.adviseTopicConfig(topic, config, metrics)
+  )
+  handle('ai:explain-schema-diff', z.tuple([name, text, text]), (subject, before, after) =>
+    aiService.explainSchemaDiff(subject, before, after)
+  )
+  handle(
+    'ai:cluster-health',
+    z.tuple([
+      z
+        .object({
+          topics: z.number(),
+          consumerGroups: z.number(),
+          brokers: z.number(),
+          underReplicatedPartitions: z.number(),
+          totalLag: z.number(),
+          dlqMessages: z.number()
+        })
+        .passthrough()
+    ]),
+    (data) => aiService.summarizeClusterHealth(data)
+  )
+  handle(
+    'ai:search-topics',
+    z.tuple([text.min(1).max(1000), z.array(name).max(5000)]),
+    (query, topics) => aiService.searchTopics(query, topics)
+  )
+  handle(
+    'ai:lag-anomaly',
+    z.tuple([name, z.array(z.object({ at: z.number(), lag: z.number() })).max(360)]),
+    (group, samples) => aiService.lagAnomaly(group, samples)
+  )
+  handle('ai:models', z.tuple([aiInput]), (settings) => aiService.models(settings))
+  handle('ai:cancel', z.tuple([]), () => aiService.cancel())
+  handle('ai:history', z.tuple([]), () => storeService.aiHistory())
+  handle('ai:clear-history', z.tuple([]), () => storeService.clearAIHistory())
+  handle('settings:get', z.tuple([text.min(1).max(1000)]), (key) => {
+    if (key === 'ai_config') throw new Error('Use AI settings')
+    return storeService.getSetting(key)
+  })
+  handle('settings:set', z.tuple([text.min(1).max(1000), text.max(1_000_000)]), (key, value) => {
+    if (key === 'ai_config') throw new Error('Use AI settings')
+    storeService.setSetting(key, value)
+  })
+  handle('settings:get-ai', z.tuple([]), () => storeService.getAISettings())
+  handle('settings:save-ai', z.tuple([aiInput]), (settings) => {
+    storeService.saveAISettings(settings)
+    aiService.configure(settings)
+  })
+  handle('favorites:list', z.tuple([name]), (id) => storeService.getFavorites(id))
+  handle('favorites:add', z.tuple([name, topicName]), (id, topic) =>
+    storeService.addFavorite(id, topic)
+  )
+  handle('favorites:remove', z.tuple([name, topicName]), (id, topic) =>
+    storeService.removeFavorite(id, topic)
+  )
+  const dlqArgs = z.tuple([name, topicName, integer, z.string().regex(/^\d+$/)])
+  handle('dlq:mark-reviewed', dlqArgs, (id, topic, partition, offset) =>
+    storeService.markDLQReviewed(id, topic, partition, offset)
+  )
+  handle('dlq:is-reviewed', dlqArgs, (id, topic, partition, offset) =>
+    storeService.isDLQReviewed(id, topic, partition, offset)
+  )
+  handle('app:version', z.tuple([]), () => app.getVersion())
+  handle('app:select-certificate', z.tuple([]), async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Choose certificate or private key',
+      properties: ['openFile'],
+      filters: [{ name: 'Certificates', extensions: ['pem', 'crt', 'cer', 'key'] }]
+    })
+    return result.canceled ? undefined : result.filePaths[0]
+  })
+  handle('app:check-update', z.tuple([]), () => updateService.check())
+  handle('app:update-state', z.tuple([]), () => updateService.getState())
+  handle('app:download-update', z.tuple([]), () => updateService.download())
+  handle('app:install-update', z.tuple([]), () => updateService.install())
 }

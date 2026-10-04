@@ -11,6 +11,8 @@ export interface ClusterConfig {
   username?: string
   password?: string
   sslCertPath?: string
+  sslClientCertPath?: string
+  sslKeyPath?: string
   schemaRegistryUrl?: string
   schemaRegistryAuth?: { username: string; password: string }
   environmentLabel: EnvironmentLabel
@@ -41,6 +43,8 @@ export interface Topic {
   isDLQ: boolean
   configs: Record<string, string>
   underReplicatedPartitions: number
+  offlinePartitions?: number
+  messageCountError?: string
   createdAt?: number
 }
 
@@ -52,7 +56,7 @@ export interface TopicPartition {
   isr: number[]
   logStartOffset: number
   logEndOffset: number
-  leaderEpoch: number
+  leaderEpoch?: number
   isUnderReplicated: boolean
 }
 
@@ -67,6 +71,12 @@ export interface KafkaMessage {
   keyFormat: PayloadFormat
   valueFormat: PayloadFormat
   schemaId?: number
+  keySchemaId?: number
+  isTombstone?: boolean
+  rawValue?: string
+  rawKey?: string
+  rawHeaders?: Record<string, string[]>
+  decodeError?: string
 }
 
 export type PayloadFormat = 'json' | 'avro' | 'protobuf' | 'string' | 'binary'
@@ -89,6 +99,7 @@ export interface ConsumerGroup {
   members: number
   protocolType: string
   totalLag: number
+  lagError?: string
   topics: string[]
 }
 
@@ -114,9 +125,18 @@ export interface SchemaSubject {
   latestVersion: number
   compatibility: SchemaCompatibility
   schemaType: 'AVRO' | 'PROTOBUF' | 'JSON'
+  schema?: string
+  error?: string
 }
 
-export type SchemaCompatibility = 'BACKWARD' | 'FORWARD' | 'FULL' | 'NONE' | 'BACKWARD_TRANSITIVE' | 'FORWARD_TRANSITIVE' | 'FULL_TRANSITIVE'
+export type SchemaCompatibility =
+  | 'BACKWARD'
+  | 'FORWARD'
+  | 'FULL'
+  | 'NONE'
+  | 'BACKWARD_TRANSITIVE'
+  | 'FORWARD_TRANSITIVE'
+  | 'FULL_TRANSITIVE'
 
 export interface SchemaVersion {
   subject: string
@@ -143,6 +163,10 @@ export interface AISettings {
   apiKey: string
   model: string
   redactedFields: string[]
+  consent?: boolean
+  features?: Partial<Record<AIFeature, boolean>>
+  anomalyThreshold?: number
+  historyEnabled?: boolean
 }
 
 export type NavigationPage =
@@ -154,6 +178,7 @@ export type NavigationPage =
   | 'dlq'
   | 'brokers'
   | 'settings'
+  | 'partitions'
 
 export interface MessageFilter {
   partition?: number
@@ -170,4 +195,139 @@ export const ENV_COLORS: Record<EnvironmentLabel, string> = {
   dev: '#22c55e',
   staging: '#f59e0b',
   prod: '#ef4444'
+}
+
+export type AIFeature =
+  'messages' | 'dlq' | 'topics' | 'schemas' | 'health' | 'search' | 'anomalies'
+export interface IpcResult<T = void> {
+  success: boolean
+  data?: T
+  error?: string
+}
+export interface ConnectionResult {
+  success: boolean
+  brokerCount?: number
+  kafkaVersion?: string
+  error?: string
+}
+export interface AIResponse {
+  content: string
+  usage?: { promptTokens: number; completionTokens: number }
+}
+export interface FetchOptions extends Partial<MessageFilter> {
+  topic: string
+  offset?: string
+  offsets?: Record<number, string>
+  timestamp?: number
+  limit?: number
+  requestId?: string
+  direction?: 'forward' | 'backward'
+}
+export interface CreateTopicOptions {
+  name: string
+  partitions: number
+  replicationFactor: number
+  configs?: Record<string, string>
+}
+export interface ProduceOptions {
+  topic: string
+  key?: string | null
+  value: string
+  partition?: number
+  headers?: Record<string, string>
+  valueFormat?: PayloadFormat
+  schemaId?: number
+  tombstone?: boolean
+  rawValue?: string
+  rawKey?: string
+  rawHeaders?: Record<string, string[]>
+}
+export interface OffsetSpec {
+  type: 'earliest' | 'latest' | 'to-offset' | 'to-timestamp'
+  value?: string | number
+}
+export interface GroupDetail {
+  groupId: string
+  state: string
+  members: ConsumerGroupMember[]
+}
+export interface SchemaDefinition {
+  schema: string
+  schemaType?: 'AVRO' | 'PROTOBUF' | 'JSON'
+  references?: SchemaReference[]
+}
+export interface SchemaReference {
+  name: string
+  subject: string
+  version: number
+}
+export interface ConfigSnapshot {
+  at: number
+  configs: Record<string, string>
+}
+export interface LagSample {
+  at: number
+  lag: number
+}
+export interface TopicMatch {
+  name: string
+  reason: string
+}
+export interface ClusterHealthContext {
+  topics: number
+  consumerGroups: number
+  brokers: number
+  underReplicatedPartitions: number
+  totalLag: number
+  lagUnavailableGroups?: number
+  dlqMessages: number
+  offlinePartitions?: number
+  topicConfigs?: unknown
+  lagTrends?: unknown
+  schemaIssues?: unknown
+  schemaSubjects?: {
+    subject: string
+    compatibility: string
+    latestVersion: number
+    schemaType: string
+  }[]
+}
+export interface TopicMetrics {
+  messageCount: number
+  partitions: number
+  consumerLag: number
+  partitionCounts?: Record<number, number>
+}
+export interface DisplayPreferences {
+  fontSize: 'small' | 'medium' | 'large'
+  dlqPatterns: string[]
+}
+
+export interface MessagePage {
+  messages: KafkaMessage[]
+  nextOffsets: Record<number, string>
+  hasMore: boolean
+}
+
+export interface AIHistoryEntry {
+  id: number
+  at: number
+  feature: AIFeature
+  provider: AIProvider
+  model: string
+  response: AIResponse
+}
+export interface UpdateState {
+  status:
+    | 'unsupported'
+    | 'idle'
+    | 'checking'
+    | 'available'
+    | 'current'
+    | 'downloading'
+    | 'ready'
+    | 'error'
+  version?: string
+  percent?: number
+  error?: string
 }

@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import { useDataStore } from './dataStore'
+import { useUIStore } from './uiStore'
 import type { ClusterConfig, ClusterConnection, ConnectionStatus } from '@/types'
 
 interface ClusterStore {
@@ -30,6 +32,7 @@ export const useClusterStore = create<ClusterStore>((set, get) => ({
   isLoading: false,
 
   loadClusters: async () => {
+    if (get().isLoading) return
     set({ isLoading: true })
     try {
       const res = await window.api.cluster.list()
@@ -47,7 +50,13 @@ export const useClusterStore = create<ClusterStore>((set, get) => ({
       } else {
         set({ clusters: [], connections: {}, isLoading: false })
       }
-    } catch {
+    } catch (error) {
+      useUIStore
+        .getState()
+        .addNotification(
+          'error',
+          error instanceof Error ? error.message : 'Could not load clusters'
+        )
       set({ clusters: [], connections: {}, isLoading: false })
     }
   },
@@ -76,7 +85,11 @@ export const useClusterStore = create<ClusterStore>((set, get) => ({
     set((state) => ({
       clusters: state.clusters.map((c) =>
         c.id === id ? { ...c, ...updates, updatedAt: Date.now() } : c
-      )
+      ),
+      connections: {
+        ...state.connections,
+        [id]: { ...state.connections[id], config: { ...state.connections[id].config, ...updates } }
+      }
     }))
   },
 
@@ -86,18 +99,25 @@ export const useClusterStore = create<ClusterStore>((set, get) => ({
       throw new Error(res.error ?? 'Failed to delete cluster')
     }
 
+    if (get().activeClusterId === id) get().setActiveCluster(null)
     set((state) => ({
       clusters: state.clusters.filter((c) => c.id !== id),
-      connections: Object.fromEntries(
-        Object.entries(state.connections).filter(([k]) => k !== id)
-      ),
+      connections: Object.fromEntries(Object.entries(state.connections).filter(([k]) => k !== id)),
       activeClusterId: state.activeClusterId === id ? null : state.activeClusterId
     }))
   },
 
-  setActiveCluster: (id) => set({ activeClusterId: id }),
+  setActiveCluster: (id) => {
+    if (get().activeClusterId !== id) {
+      useDataStore.getState().activateCluster(id)
+      useUIStore.getState().setSelectedTopic(null)
+      useUIStore.getState().setSelectedBroker(null)
+      set({ activeClusterId: id })
+    }
+  },
 
   connectCluster: async (id) => {
+    if (get().connections[id]?.status === 'connecting') return
     const { clusters } = get()
     const cluster = clusters.find((c) => c.id === id)
     if (!cluster) return
@@ -106,7 +126,7 @@ export const useClusterStore = create<ClusterStore>((set, get) => ({
       set((state) => ({
         connections: {
           ...state.connections,
-          [id]: { ...state.connections[id], config: cluster, status, ...meta }
+          [id]: { ...state.connections[id], config: cluster, status, error: undefined, ...meta }
         }
       }))
     }
@@ -115,13 +135,15 @@ export const useClusterStore = create<ClusterStore>((set, get) => ({
 
     try {
       const res = await window.api.cluster.connect(id, cluster)
-      const inner = res.data as { success?: boolean; brokerCount?: number; kafkaVersion?: string; error?: string } | undefined
+      const inner = res.data as
+        | { success?: boolean; brokerCount?: number; kafkaVersion?: string; error?: string }
+        | undefined
       if (res.success && inner?.success) {
         setStatus('connected', {
           brokerCount: inner.brokerCount,
           kafkaVersion: inner.kafkaVersion
         })
-        set({ activeClusterId: id })
+        get().setActiveCluster(id)
       } else {
         const errorMsg = inner?.error ?? res.error ?? 'Connection failed'
         setStatus('error', { error: errorMsg })
@@ -132,6 +154,7 @@ export const useClusterStore = create<ClusterStore>((set, get) => ({
   },
 
   disconnectCluster: async (id) => {
+    if (get().activeClusterId === id) get().setActiveCluster(null)
     set((state) => ({
       connections: {
         ...state.connections,
@@ -156,7 +179,9 @@ export const useClusterStore = create<ClusterStore>((set, get) => ({
   testConnection: async (config) => {
     try {
       const res = await window.api.cluster.testConnection(config)
-      const inner = res.data as { success?: boolean; brokerCount?: number; kafkaVersion?: string; error?: string } | undefined
+      const inner = res.data as
+        | { success?: boolean; brokerCount?: number; kafkaVersion?: string; error?: string }
+        | undefined
       if (res.success && inner?.success) {
         return {
           success: true,

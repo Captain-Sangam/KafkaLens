@@ -1,4 +1,5 @@
-const NOT_CONFIGURED_MSG = 'AI is not configured. Go to Settings (⌘7) → AI Configuration to add your API key.'
+const NOT_CONFIGURED_MSG =
+  'AI is not configured. Go to Settings (⌘7) → AI Configuration to add your API key.'
 
 export async function checkAIConfigured(): Promise<{ ok: boolean; message?: string }> {
   try {

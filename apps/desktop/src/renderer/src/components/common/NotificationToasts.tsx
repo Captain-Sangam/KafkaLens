@@ -22,7 +22,11 @@ export function NotificationToasts() {
   if (notifications.length === 0) return null
 
   return (
-    <div className="fixed bottom-12 right-4 z-50 flex flex-col gap-2">
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed bottom-12 right-4 z-50 flex flex-col gap-2"
+    >
       {notifications.map((n) => {
         const Icon = ICONS[n.type]
         return (
@@ -34,6 +38,7 @@ export function NotificationToasts() {
             <Icon className="mt-0.5 h-4 w-4 shrink-0" />
             <span className="flex-1 text-sm leading-relaxed">{n.message}</span>
             <button
+              aria-label="Dismiss notification"
               onClick={() => dismiss(n.id)}
               className="shrink-0 opacity-60 hover:opacity-100 transition-opacity"
             >

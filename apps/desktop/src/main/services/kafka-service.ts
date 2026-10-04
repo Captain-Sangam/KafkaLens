@@ -1,6 +1,18 @@
-import { Kafka, KafkaConfig, ConfigResourceTypes, logLevel } from 'kafkajs'
+import { Kafka, KafkaConfig, ConfigResourceTypes, ConfigSource, logLevel } from 'kafkajs'
 import type { Admin, Producer } from 'kafkajs'
 import { readFileSync } from 'fs'
+import { createBulkAdmin } from '../lib/bulk-offsets'
+import type { BulkAdmin } from '../lib/bulk-offsets'
+import { payloadService } from './payload-service'
+import { matchesMessage, validateFilters } from '../lib/message-filter'
+import type {
+  FetchOptions,
+  ProduceOptions,
+  KafkaMessage,
+  Topic,
+  MessagePage
+} from '../../renderer/src/types'
+import { storeService } from './store-service'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -14,6 +26,8 @@ export interface ClusterConnectionConfig {
   username?: string
   password?: string
   sslCertPath?: string
+  sslClientCertPath?: string
+  sslKeyPath?: string
 }
 
 export interface ConnectionResult {
@@ -42,7 +56,7 @@ const DLQ_PATTERNS = [
   /[.\-_]dlt([.\-_]|$)/i,
   /[.\-_]retry([.\-_]|$)/i,
   /[.\-_]error([.\-_]|$)/i,
-  /dead[.\-_]?letter/i,
+  /dead[.\-_]?letter/i
 ]
 
 function isDLQTopic(name: string): boolean {
@@ -66,37 +80,15 @@ export interface PartitionInfo {
 }
 
 export interface CreateTopicOpts {
-  topic: string
-  numPartitions: number
+  name: string
+  partitions: number
   replicationFactor: number
   configs?: Record<string, string>
 }
 
-export interface FetchMessagesOpts {
-  topic: string
-  partition?: number
-  offset?: string // 'latest', 'earliest', or a specific number
-  timestamp?: number
-  limit: number
-}
-
-export interface KafkaMessageResult {
-  topic: string
-  partition: number
-  offset: string
-  timestamp: string
-  key: string | null
-  value: string
-  headers: Record<string, string>
-}
-
-export interface ProduceMessageOpts {
-  topic: string
-  key?: string
-  value: string
-  headers?: Record<string, string>
-  partition?: number
-}
+export type FetchMessagesOpts = FetchOptions
+export type KafkaMessageResult = KafkaMessage
+export type ProduceMessageOpts = ProduceOptions
 
 export interface ConsumerGroupInfo {
   groupId: string
@@ -104,6 +96,7 @@ export interface ConsumerGroupInfo {
   members: number
   protocolType: string
   totalLag: number
+  lagError?: string
   topics: string[]
 }
 
@@ -126,11 +119,7 @@ export interface ConsumerGroupOffsetInfo {
   lag: number
 }
 
-export type OffsetResetSpec =
-  | { type: 'earliest' }
-  | { type: 'latest' }
-  | { type: 'offset'; value: number }
-  | { type: 'timestamp'; value: number }
+export type OffsetResetSpec = import('../../renderer/src/types').OffsetSpec
 
 export interface BrokerInfo {
   id: number
@@ -147,6 +136,8 @@ export interface BrokerInfo {
 interface KafkaConnection {
   kafka: Kafka
   admin: Admin
+  counts: BulkAdmin['counts']
+  highOffsets: BulkAdmin['highOffsets']
   producer: Producer | null
   config: ClusterConnectionConfig
 }
@@ -155,29 +146,46 @@ interface KafkaConnection {
 // Service
 // ---------------------------------------------------------------------------
 
-class KafkaService {
+export class KafkaService {
   private connections = new Map<string, KafkaConnection>()
+  private progress = new Map<
+    string,
+    { nextOffsets: Record<number, string>; ends: Record<number, string> }
+  >()
+  private reads = new Map<string, { cluster: string; cancel: () => void }>()
+  cancelRead(id: string): void {
+    this.reads.get(id)?.cancel()
+  }
+  async disconnectAll(): Promise<void> {
+    await Promise.all([...this.connections.keys()].map((id) => this.disconnect(id)))
+  }
 
   // -----------------------------------------------------------------------
   // Connection lifecycle
   // -----------------------------------------------------------------------
 
-  async connect(
-    clusterId: string,
-    config: ClusterConnectionConfig
-  ): Promise<ConnectionResult> {
+  async connect(clusterId: string, config: ClusterConnectionConfig): Promise<ConnectionResult> {
+    let admin: Admin | undefined
     try {
       if (this.connections.has(clusterId)) {
         await this.disconnect(clusterId)
       }
 
       const kafka = this.createKafkaInstance(config)
-      const admin = kafka.admin()
+      const bulk = createBulkAdmin(kafka)
+      admin = bulk.admin
       await admin.connect()
 
       const cluster = await admin.describeCluster()
 
-      this.connections.set(clusterId, { kafka, admin, producer: null, config })
+      this.connections.set(clusterId, {
+        kafka,
+        admin,
+        counts: bulk.counts,
+        highOffsets: bulk.highOffsets,
+        producer: null,
+        config
+      })
 
       return {
         success: true,
@@ -185,11 +193,13 @@ class KafkaService {
         kafkaVersion: undefined
       }
     } catch (err: unknown) {
+      await admin?.disconnect().catch(() => {})
       return { success: false, error: errorMessage(err) }
     }
   }
 
   async disconnect(clusterId: string): Promise<void> {
+    for (const read of this.reads.values()) if (read.cluster === clusterId) read.cancel()
     const conn = this.connections.get(clusterId)
     if (!conn) return
 
@@ -219,16 +229,23 @@ class KafkaService {
     }
   }
 
-  isConnected(clusterId: string): boolean {
-    return this.connections.has(clusterId)
+  async isConnected(clusterId: string): Promise<boolean> {
+    const connection = this.connections.get(clusterId)
+    if (!connection) return false
+    try {
+      await connection.admin.describeCluster()
+      return true
+    } catch {
+      return false
+    }
   }
 
   // -----------------------------------------------------------------------
   // Topics
   // -----------------------------------------------------------------------
 
-  async listTopics(clusterId: string): Promise<TopicInfo[]> {
-    const { admin } = this.getConnection(clusterId)
+  async listTopics(clusterId: string): Promise<Topic[]> {
+    const { admin, counts: bulkCounts } = this.getConnection(clusterId)
 
     const topicNames = await admin.listTopics()
     if (topicNames.length === 0) return []
@@ -239,10 +256,69 @@ class KafkaService {
       type: ConfigResourceTypes.TOPIC as number,
       name
     }))
-    const { resources: configResults } = await admin.describeConfigs({
+    const configPromise = admin.describeConfigs({
       includeSynonyms: false,
       resources: configResources
     })
+
+    const OFFSET_TIMEOUT_MS = 3_000
+    const OFFSET_BATCH_SIZE = 50
+
+    async function fetchOffsetsWithTimeout(adm: Admin, topic: string): Promise<number | null> {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        const result = await Promise.race([
+          adm.fetchTopicOffsets(topic),
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), OFFSET_TIMEOUT_MS)
+          })
+        ])
+        if (!result) return null
+        let count = 0
+        for (const po of result) {
+          const high = parseInt(po.high, 10) || 0
+          const low = parseInt(po.low, 10) || 0
+          count += Math.max(0, high - low)
+        }
+        return count
+      } catch {
+        return null
+      } finally {
+        if (timer) clearTimeout(timer)
+      }
+    }
+
+    const offsetByTopic = new Map<string, number | null>()
+    const topicList = metadata.topics.map((t) => t.name)
+    const [{ resources: configResults }] = await Promise.all([
+      configPromise,
+      (async () => {
+        if (bulkCounts) {
+          let timer: ReturnType<typeof setTimeout> | undefined
+          try {
+            const counts = await Promise.race([
+              bulkCounts(metadata.topics),
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new Error('Offsets timed out')), OFFSET_TIMEOUT_MS)
+              })
+            ])
+            for (const topic of topicList) offsetByTopic.set(topic, counts.get(topic) ?? null)
+            return
+          } catch {
+            /* Restricted brokers or an incompatible SDK use the public per-topic API. */
+          } finally {
+            if (timer) clearTimeout(timer)
+          }
+        }
+        for (let i = 0; i < topicList.length; i += OFFSET_BATCH_SIZE) {
+          const batch = topicList.slice(i, i + OFFSET_BATCH_SIZE)
+          const counts = await Promise.all(
+            batch.map((name) => fetchOffsetsWithTimeout(admin, name))
+          )
+          batch.forEach((name, idx) => offsetByTopic.set(name, counts[idx]))
+        }
+      })()
+    ])
 
     const configByTopic = new Map<string, Record<string, string>>()
     for (const res of configResults) {
@@ -253,42 +329,19 @@ class KafkaService {
       configByTopic.set(res.resourceName, map)
     }
 
-    const OFFSET_TIMEOUT_MS = 3_000
-    const OFFSET_BATCH_SIZE = 10
-
-    async function fetchOffsetsWithTimeout(
-      adm: Admin,
-      topic: string
-    ): Promise<number> {
-      try {
-        const result = await Promise.race([
-          adm.fetchTopicOffsets(topic),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), OFFSET_TIMEOUT_MS))
-        ])
-        if (!result) return 0
-        let count = 0
-        for (const po of result) {
-          const high = parseInt(po.high, 10) || 0
-          const low = parseInt(po.low, 10) || 0
-          count += high - low
-        }
-        return count
-      } catch {
-        return 0
-      }
+    let configuredPatterns: string[] = []
+    try {
+      const raw = storeService.getSetting('display')
+      const values = raw ? JSON.parse(raw).dlqPatterns : []
+      if (Array.isArray(values))
+        configuredPatterns = values.filter(
+          (value: unknown): value is string => typeof value === 'string' && value.length > 0
+        )
+    } catch {
+      /* Default detection remains available if local preferences are damaged. */
     }
 
-    const offsetByTopic = new Map<string, number>()
-    const topicList = metadata.topics.map((t) => t.name)
-    for (let i = 0; i < topicList.length; i += OFFSET_BATCH_SIZE) {
-      const batch = topicList.slice(i, i + OFFSET_BATCH_SIZE)
-      const counts = await Promise.all(
-        batch.map((name) => fetchOffsetsWithTimeout(admin, name))
-      )
-      batch.forEach((name, idx) => offsetByTopic.set(name, counts[idx]))
-    }
-
-    const results: TopicInfo[] = []
+    const results: Topic[] = []
 
     for (const topicMeta of metadata.topics) {
       const configs = configByTopic.get(topicMeta.name) ?? {}
@@ -301,21 +354,26 @@ class KafkaService {
       }
 
       const replicationFactor =
-        topicMeta.partitions.length > 0
-          ? topicMeta.partitions[0].replicas.length
-          : 0
+        topicMeta.partitions.length > 0 ? topicMeta.partitions[0].replicas.length : 0
 
       results.push({
         name: topicMeta.name,
         partitions: topicMeta.partitions.length,
         replicationFactor,
         messageCount: offsetByTopic.get(topicMeta.name) ?? 0,
+        messageCountError:
+          offsetByTopic.get(topicMeta.name) === null ? 'Could not read topic offsets' : undefined,
         retentionMs: parseInt(configs['retention.ms'] ?? '-1', 10),
         retentionBytes: parseInt(configs['retention.bytes'] ?? '-1', 10),
-        cleanupPolicy: configs['cleanup.policy'] ?? 'delete',
+        cleanupPolicy: (configs['cleanup.policy'] ?? 'delete') as Topic['cleanupPolicy'],
         isInternal: topicMeta.name.startsWith('__'),
-        isDLQ: isDLQTopic(topicMeta.name),
+        isDLQ: configuredPatterns.length
+          ? configuredPatterns.some((pattern) =>
+              topicMeta.name.toLowerCase().includes(pattern.toLowerCase())
+            )
+          : isDLQTopic(topicMeta.name),
         configs,
+        offlinePartitions: topicMeta.partitions.filter((p) => p.leader < 0).length,
         underReplicatedPartitions: underReplicated
       })
     }
@@ -323,10 +381,7 @@ class KafkaService {
     return results
   }
 
-  async getTopicMetadata(
-    clusterId: string,
-    topic: string
-  ): Promise<TopicMetadata> {
+  async getTopicMetadata(clusterId: string, topic: string): Promise<TopicMetadata> {
     const { admin } = this.getConnection(clusterId)
 
     const metadata = await admin.fetchTopicMetadata({ topics: [topic] })
@@ -334,11 +389,9 @@ class KafkaService {
     if (!topicMeta) throw new Error(`Topic "${topic}" not found`)
 
     const cluster = await admin.describeCluster()
-    const brokerMap = new Map(
-      cluster.brokers.map((b) => [b.nodeId, `${b.host}:${b.port}`])
-    )
+    const brokerMap = new Map(cluster.brokers.map((b) => [b.nodeId, `${b.host}:${b.port}`]))
 
-    let offsetsByPartition = new Map<number, { high: string; low: string }>()
+    const offsetsByPartition = new Map<number, { high: string; low: string }>()
     try {
       const offsets = await admin.fetchTopicOffsets(topic)
       for (const po of offsets) {
@@ -365,10 +418,7 @@ class KafkaService {
     return { name: topic, partitions }
   }
 
-  async getTopicConfig(
-    clusterId: string,
-    topic: string
-  ): Promise<Record<string, string>> {
+  async getTopicConfig(clusterId: string, topic: string): Promise<Record<string, string>> {
     const { admin } = this.getConnection(clusterId)
 
     const { resources } = await admin.describeConfigs({
@@ -393,8 +443,8 @@ class KafkaService {
     await admin.createTopics({
       topics: [
         {
-          topic: opts.topic,
-          numPartitions: opts.numPartitions,
+          topic: opts.name,
+          numPartitions: opts.partitions,
           replicationFactor: opts.replicationFactor,
           configEntries
         }
@@ -414,6 +464,17 @@ class KafkaService {
   ): Promise<void> {
     const { admin } = this.getConnection(clusterId)
 
+    // AlterConfigs replaces all overrides: retain existing dynamic values.
+    const described = await admin.describeConfigs({
+      includeSynonyms: false,
+      resources: [{ type: ConfigResourceTypes.TOPIC, name: topic }]
+    })
+    const overrides = Object.fromEntries(
+      (described.resources[0]?.configEntries ?? [])
+        .filter((c) => !c.isDefault && !c.readOnly && !c.isSensitive && c.configValue !== null)
+        .map((c) => [c.configName, c.configValue])
+    )
+    configs = { ...overrides, ...configs }
     await admin.alterConfigs({
       validateOnly: false,
       resources: [
@@ -433,128 +494,208 @@ class KafkaService {
   // Messages
   // -----------------------------------------------------------------------
 
-  async fetchMessages(
-    clusterId: string,
-    opts: FetchMessagesOpts
-  ): Promise<KafkaMessageResult[]> {
+  async fetchMessagePage(clusterId: string, opts: FetchOptions): Promise<MessagePage> {
+    const requestId = opts.requestId ?? crypto.randomUUID()
+    try {
+      const messages = await this.fetchMessages(clusterId, { ...opts, requestId })
+      const progress = this.progress.get(requestId)
+      return {
+        messages,
+        nextOffsets: progress?.nextOffsets ?? {},
+        hasMore: progress
+          ? Object.entries(progress.ends).some(
+              ([p, end]) => BigInt(progress.nextOffsets[Number(p)] ?? end) < BigInt(end)
+            )
+          : false
+      }
+    } finally {
+      this.progress.delete(requestId)
+    }
+  }
+  async fetchMessages(clusterId: string, opts: FetchMessagesOpts): Promise<KafkaMessageResult[]> {
+    validateFilters(opts)
     const conn = this.getConnection(clusterId)
-    const groupId = `kafkalens-browser-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const limit = opts.limit ?? 50
+    const snapshot = await conn.admin.fetchTopicOffsets(opts.topic)
+    const starts = new Map<number, string>()
+    const ends = new Map<number, bigint>()
+    const timestampOffsets =
+      opts.timestamp !== undefined
+        ? await conn.admin.fetchTopicOffsetsByTimestamp(opts.topic, opts.timestamp)
+        : undefined
+    for (const p of snapshot) {
+      if (opts.partition !== undefined && opts.partition !== p.partition) continue
+      const low = BigInt(p.low),
+        high = BigInt(p.high)
+      let start = opts.offset === 'earliest' ? low : high - BigInt(limit)
+      const explicit =
+        opts.offsets?.[p.partition] ??
+        (opts.offset && !['latest', 'earliest'].includes(opts.offset) ? opts.offset : undefined)
+      if (explicit !== undefined) start = BigInt(explicit)
+      if (opts.direction === 'backward' && explicit !== undefined) {
+        ends.set(p.partition, start < high ? start : high)
+        start -= BigInt(limit)
+      } else ends.set(p.partition, high)
+      if (timestampOffsets) {
+        const timestampOffset = timestampOffsets.find((t) => t.partition === p.partition)
+        start =
+          timestampOffset && timestampOffset.offset !== '-1' ? BigInt(timestampOffset.offset) : high
+      }
+      start = start < low ? low : start > high ? high : start
+      if (start < (ends.get(p.partition) ?? high)) starts.set(p.partition, String(start))
+    }
+    const requestId = opts.requestId ?? crypto.randomUUID()
+    const progress = {
+      nextOffsets: Object.fromEntries(
+        snapshot.map((p) => [p.partition, starts.get(p.partition) ?? p.high])
+      ),
+      ends: Object.fromEntries([...ends].map(([p, end]) => [p, String(end)]))
+    }
+    if (this.progress.size > 128) this.progress.clear()
+    this.progress.set(requestId, progress)
+    if (!starts.size) return []
+    const groupId = `kafkalens-browser-${Date.now()}-${Math.random().toString(36).slice(2)}`
     const consumer = conn.kafka.consumer({
       groupId,
-      maxWaitTimeInMs: 3000,
-      sessionTimeout: 15000
+      maxWaitTimeInMs: 100,
+      sessionTimeout: 10000,
+      allowAutoTopicCreation: false
     })
-
-    const messages: KafkaMessageResult[] = []
-    let resolveCollected: (() => void) | null = null
-
+    const messages: KafkaMessage[] = []
+    let bytes = 0
+    const counts = new Map<number, number>()
+    const remaining = new Set(starts.keys())
+    let finish = () => {}
+    let ready = false
+    let cancelled = false
+    const collected = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    this.reads.set(requestId, {
+      cluster: clusterId,
+      cancel: () => {
+        cancelled = true
+        finish()
+      }
+    })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    consumer.on(consumer.events.GROUP_JOIN, () => {
+      for (const partition of starts.keys())
+        consumer.seek({ topic: opts.topic, partition, offset: starts.get(partition)! })
+      const ignored = snapshot.filter((p) => !starts.has(p.partition)).map((p) => p.partition)
+      if (ignored.length) consumer.pause([{ topic: opts.topic, partitions: ignored }])
+      ready = true
+    })
+    consumer.on(consumer.events.CRASH, () => {
+      cancelled = true
+      finish()
+    })
     try {
       await consumer.connect()
-      await consumer.subscribe({
-        topic: opts.topic,
-        fromBeginning: opts.offset === 'earliest'
-      })
-
-      const collected = new Promise<void>((resolve) => {
-        resolveCollected = resolve
-      })
-
-      let seekApplied = false
-
+      await consumer.subscribe({ topic: opts.topic, fromBeginning: true })
       await consumer.run({
         autoCommit: false,
-        eachBatchAutoResolve: true,
-        eachBatch: async ({ batch, resolveOffset, heartbeat }) => {
+        eachBatchAutoResolve: false,
+        eachBatch: async ({ batch, resolveOffset, heartbeat, isStale }) => {
+          if (!ready || cancelled || isStale() || !remaining.has(batch.partition)) return
           for (const message of batch.messages) {
-            if (opts.partition !== undefined && batch.partition !== opts.partition) {
-              continue
-            }
-
-            messages.push({
+            if (cancelled || isStale()) return
+            if (BigInt(message.offset) < BigInt(starts.get(batch.partition)!)) continue
+            if (BigInt(message.offset) >= ends.get(batch.partition)!) break
+            const [key, value] = await Promise.all([
+              payloadService.decode(clusterId, message.key),
+              payloadService.decode(clusterId, message.value)
+            ])
+            const result: KafkaMessage = {
               topic: batch.topic,
               partition: batch.partition,
               offset: message.offset,
               timestamp: message.timestamp,
-              key: message.key?.toString() ?? null,
-              value: message.value?.toString() ?? '',
+              key: message.key === null ? null : key.value,
+              value: value.value,
+              keyFormat: key.format,
+              valueFormat: value.format,
+              schemaId: value.schemaId,
+              keySchemaId: key.schemaId,
+              rawKey: key.raw,
+              isTombstone: message.value === null,
+              rawValue: value.raw,
+              decodeError: value.error ?? key.error,
+              rawHeaders: Object.fromEntries(
+                Object.entries(message.headers ?? {}).map(([k, v]) => [
+                  k,
+                  (Array.isArray(v) ? v : [v])
+                    .filter((x) => x !== undefined)
+                    .map((x) => Buffer.from(x!).toString('base64'))
+                ])
+              ),
               headers: Object.fromEntries(
                 Object.entries(message.headers ?? {}).map(([k, v]) => [
                   k,
-                  Buffer.isBuffer(v) ? v.toString() : (v?.toString() ?? '')
+                  Buffer.isBuffer(v) ? decodeHeader(k, v) : (v?.toString() ?? '')
                 ])
               )
-            })
-
-            resolveOffset(message.offset)
-            await heartbeat()
-
-            if (messages.length >= opts.limit) {
-              resolveCollected?.()
-              return
             }
+            if (matchesMessage(result, opts)) {
+              messages.push(result)
+              counts.set(batch.partition, (counts.get(batch.partition) ?? 0) + 1)
+            }
+            progress.nextOffsets[batch.partition] = (BigInt(message.offset) + 1n).toString()
+            bytes += Buffer.byteLength(result.value) + Buffer.byteLength(result.rawValue ?? '')
+            resolveOffset(message.offset)
+            if (bytes > 32 * 1024 * 1024 || messages.length >= 10000) {
+              finish()
+              break
+            }
+            if (
+              (counts.get(batch.partition) ?? 0) >= limit ||
+              BigInt(message.offset) + 1n >= ends.get(batch.partition)!
+            ) {
+              remaining.delete(batch.partition)
+              consumer.pause([{ topic: opts.topic, partitions: [batch.partition] }])
+              break
+            }
+            await heartbeat()
           }
+          if (
+            remaining.has(batch.partition) &&
+            BigInt(batch.lastOffset()) >= ends.get(batch.partition)! - 1n &&
+            (counts.get(batch.partition) ?? 0) < limit &&
+            bytes <= 32 * 1024 * 1024 &&
+            messages.length < 10000
+          ) {
+            progress.nextOffsets[batch.partition] = ends.get(batch.partition)!.toString()
+            remaining.delete(batch.partition)
+            consumer.pause([{ topic: opts.topic, partitions: [batch.partition] }])
+          }
+          if (!remaining.size) finish()
         }
       })
-
-      if (
-        opts.offset &&
-        opts.offset !== 'latest' &&
-        opts.offset !== 'earliest'
-      ) {
-        const metadata = await conn.admin.fetchTopicMetadata({
-          topics: [opts.topic]
-        })
-        const partitions =
-          opts.partition !== undefined
-            ? [opts.partition]
-            : metadata.topics[0].partitions.map((p) => p.partitionId)
-
-        for (const p of partitions) {
-          consumer.seek({
-            topic: opts.topic,
-            partition: p,
-            offset: opts.offset
-          })
-        }
-        seekApplied = true
-      }
-
-      if (opts.timestamp !== undefined) {
-        const metadata = await conn.admin.fetchTopicMetadata({
-          topics: [opts.topic]
-        })
-        const partitions =
-          opts.partition !== undefined
-            ? [opts.partition]
-            : metadata.topics[0].partitions.map((p) => p.partitionId)
-
-        const offsetsByTimestamp = await conn.admin.fetchTopicOffsetsByTimestamp(
-          opts.topic,
-          opts.timestamp
+      timer = setTimeout(finish, 5000)
+      await collected
+      if (cancelled) throw new Error('Message request cancelled or connection interrupted')
+      const page = messages
+        .sort(
+          (a, b) =>
+            Number(a.timestamp) - Number(b.timestamp) ||
+            a.partition - b.partition ||
+            (BigInt(a.offset) < BigInt(b.offset) ? -1 : 1)
         )
-
-        for (const po of offsetsByTimestamp) {
-          if (partitions.includes(po.partition) && po.offset !== '-1') {
-            consumer.seek({
-              topic: opts.topic,
-              partition: po.partition,
-              offset: po.offset
-            })
-          }
-        }
-        seekApplied = true
-      }
-
-      const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5000))
-      await Promise.race([collected, timeout])
-
-      return messages.slice(0, opts.limit)
+        .slice(opts.offset === 'latest' ? -limit : 0, opts.offset === 'latest' ? undefined : limit)
+      const kept = new Set(page.map((m) => `${m.partition}:${m.offset}`))
+      for (const message of messages)
+        if (
+          !kept.has(`${message.partition}:${message.offset}`) &&
+          BigInt(message.offset) < BigInt(progress.nextOffsets[message.partition])
+        )
+          progress.nextOffsets[message.partition] = message.offset
+      return page
     } finally {
-      try {
-        await consumer.disconnect()
-      } catch {
-        /* best effort */
-      }
+      if (timer) clearTimeout(timer)
+      this.reads.delete(requestId)
+      await consumer.stop().catch(() => {})
+      await consumer.disconnect().catch(() => {})
+      await conn.admin.deleteGroups([groupId]).catch(() => {})
     }
   }
 
@@ -570,16 +711,25 @@ class KafkaService {
     }
 
     const headers: Record<string, string> = opts.headers ?? {}
-    const kafkaHeaders = Object.fromEntries(
-      Object.entries(headers).map(([k, v]) => [k, Buffer.from(v)])
-    )
+    const kafkaHeaders = opts.rawHeaders
+      ? Object.fromEntries(
+          Object.entries(opts.rawHeaders).map(([k, values]) => [
+            k,
+            values.map((v) => Buffer.from(v, 'base64'))
+          ])
+        )
+      : Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, Buffer.from(v)]))
 
     const result = await conn.producer.send({
       topic: opts.topic,
       messages: [
         {
-          key: opts.key ?? null,
-          value: opts.value,
+          key: opts.rawKey !== undefined ? Buffer.from(opts.rawKey, 'base64') : (opts.key ?? null),
+          value: opts.tombstone
+            ? null
+            : opts.rawValue !== undefined
+              ? Buffer.from(opts.rawValue, 'base64')
+              : await payloadService.encode(clusterId, opts.value, opts.valueFormat, opts.schemaId),
           headers: kafkaHeaders,
           partition: opts.partition
         }
@@ -597,10 +747,9 @@ class KafkaService {
   // Consumer Groups
   // -----------------------------------------------------------------------
 
-  async listConsumerGroups(
-    clusterId: string
-  ): Promise<ConsumerGroupInfo[]> {
-    const { admin } = this.getConnection(clusterId)
+  async listConsumerGroups(clusterId: string): Promise<ConsumerGroupInfo[]> {
+    const connection = this.getConnection(clusterId)
+    const { admin } = connection
 
     const { groups } = await admin.listGroups()
     if (groups.length === 0) return []
@@ -608,71 +757,57 @@ class KafkaService {
     const groupIds = groups.map((g) => g.groupId)
     const described = await admin.describeGroups(groupIds)
 
-    const results: ConsumerGroupInfo[] = []
+    // Read coordinators concurrently, then share one high-watermark snapshot
+    // across all groups instead of fetching each topic again for every group.
+    const committed = await mapConcurrent(described.groups, 8, async (group) => {
+      try {
+        return {
+          group,
+          offsets: await admin.fetchOffsets({ groupId: group.groupId }),
+          error: undefined
+        }
+      } catch {
+        return { group, offsets: [], error: 'Could not read committed offsets for this group.' }
+      }
+    })
+    const high = await this.topicHighOffsets(
+      connection,
+      committed.flatMap((g) => g.offsets)
+    )
 
-    for (const g of described.groups) {
+    return committed.map(({ group: g, offsets, error }) => {
       const topics = new Set<string>()
       for (const member of g.members) {
         try {
-          const assignment = member.memberAssignment
-          if (assignment && Buffer.isBuffer(assignment) && assignment.length > 0) {
-            let offset = 0
-            const version = assignment.readInt16BE(offset); offset += 2
-            const topicCount = assignment.readInt32BE(offset); offset += 4
-            for (let t = 0; t < topicCount && offset < assignment.length - 2; t++) {
-              const topicLen = assignment.readInt16BE(offset); offset += 2
-              if (topicLen > 0 && offset + topicLen <= assignment.length) {
-                topics.add(assignment.toString('utf-8', offset, offset + topicLen))
-                offset += topicLen
-              }
-              if (offset + 4 <= assignment.length) {
-                const partCount = assignment.readInt32BE(offset); offset += 4
-                offset += partCount * 4
-              }
-            }
-          }
+          for (const assignment of parseMemberAssignment(member.memberAssignment))
+            topics.add(assignment.topic)
         } catch {
           /* assignment parsing is best-effort */
         }
       }
 
       let totalLag = 0
+      let lagError = error
+      for (const offset of offsets) topics.add(offset.topic)
       try {
-        const offsets = await admin.fetchOffsets({ groupId: g.groupId })
-        for (const o of offsets) {
-          if (o.offset === '-1') continue
-          try {
-            const topicOffsets = await admin.fetchTopicOffsets(o.topic)
-            const partInfo = topicOffsets.find((p) => String(p.partition) === String(o.partition))
-            if (partInfo) {
-              const lag = Number(partInfo.offset) - Number(o.offset)
-              if (lag > 0) totalLag += lag
-            }
-          } catch {
-            /* skip topics we can't access */
-          }
-        }
+        totalLag = groupOffsetRows(offsets, high).reduce((sum, offset) => sum + offset.lag, 0)
       } catch {
-        /* offsets unavailable */
+        lagError = 'Could not read topic end offsets. Check broker access and refresh.'
       }
 
-      results.push({
+      return {
         groupId: g.groupId,
         state: g.state,
         members: g.members.length,
         protocolType: g.protocolType,
         totalLag,
+        lagError,
         topics: Array.from(topics)
-      })
-    }
-
-    return results
+      }
+    })
   }
 
-  async describeConsumerGroup(
-    clusterId: string,
-    groupId: string
-  ): Promise<ConsumerGroupDetail> {
+  async describeConsumerGroup(clusterId: string, groupId: string): Promise<ConsumerGroupDetail> {
     const { admin } = this.getConnection(clusterId)
 
     const described = await admin.describeGroups([groupId])
@@ -711,39 +846,44 @@ class KafkaService {
     clusterId: string,
     groupId: string
   ): Promise<ConsumerGroupOffsetInfo[]> {
-    const { admin } = this.getConnection(clusterId)
+    const connection = this.getConnection(clusterId)
+    const offsets = await connection.admin.fetchOffsets({ groupId })
+    return groupOffsetRows(offsets, await this.topicHighOffsets(connection, offsets))
+  }
 
-    const groupOffsets = await admin.fetchOffsets({ groupId })
-    const results: ConsumerGroupOffsetInfo[] = []
-
-    const topicNames = [...new Set(groupOffsets.map((o) => o.topic))]
-
-    for (const topic of topicNames) {
-      const topicEndOffsets = await admin.fetchTopicOffsets(topic)
-      const endOffsetMap = new Map(
-        topicEndOffsets.map((o) => [o.partition, parseInt(o.high, 10)])
-      )
-
-      const partitionOffsets = groupOffsets.filter((o) => o.topic === topic)
-      for (const po of partitionOffsets) {
-        for (const p of po.partitions) {
-          const currentOffset = parseInt(p.offset, 10)
-          const logEndOffset = endOffsetMap.get(p.partition) ?? 0
-          const lag =
-            currentOffset >= 0 ? Math.max(0, logEndOffset - currentOffset) : logEndOffset
-
-          results.push({
-            topic,
-            partition: p.partition,
-            currentOffset,
-            logEndOffset,
-            lag
-          })
-        }
+  private async topicHighOffsets(
+    connection: KafkaConnection,
+    offsets: Awaited<ReturnType<Admin['fetchOffsets']>>
+  ): Promise<Map<string, Map<number, number>>> {
+    const topics = new Map<string, Set<number>>()
+    for (const offset of offsets) {
+      const partitions = topics.get(offset.topic) ?? new Set<number>()
+      for (const partition of offset.partitions) partitions.add(partition.partition)
+      if (partitions.size) topics.set(offset.topic, partitions)
+    }
+    if (!topics.size) return new Map()
+    if (connection.highOffsets) {
+      try {
+        return await connection.highOffsets(
+          [...topics].map(([name, partitions]) => ({
+            name,
+            partitions: [...partitions].map((partitionId) => ({ partitionId }))
+          }))
+        )
+      } catch {
+        // A deleted topic or restricted broker must not hide unrelated groups.
       }
     }
-
-    return results
+    return new Map(
+      await mapConcurrent([...topics.keys()], 8, async (topic) => {
+        try {
+          const values = await connection.admin.fetchTopicOffsets(topic)
+          return [topic, new Map(values.map((p) => [p.partition, Number(p.high)]))] as const
+        } catch {
+          return [topic, new Map<number, number>()] as const
+        }
+      })
+    )
   }
 
   async resetConsumerGroupOffsets(
@@ -754,12 +894,24 @@ class KafkaService {
   ): Promise<void> {
     const { admin } = this.getConnection(clusterId)
 
+    const described = await admin.describeGroups([groupId])
+    if (described.groups[0]?.members.length)
+      throw new Error('Stop the consumers before resetting offsets')
     if (offsetSpec.type === 'earliest') {
       await admin.resetOffsets({ groupId, topic, earliest: true })
     } else if (offsetSpec.type === 'latest') {
       await admin.resetOffsets({ groupId, topic, earliest: false })
-    } else if (offsetSpec.type === 'offset') {
+    } else if (offsetSpec.type === 'to-offset') {
       const topicOffsets = await admin.fetchTopicOffsets(topic)
+      if (
+        !/^\d+$/.test(String(offsetSpec.value)) ||
+        topicOffsets.some(
+          (p) =>
+            BigInt(String(offsetSpec.value)) < BigInt(p.low) ||
+            BigInt(String(offsetSpec.value)) > BigInt(p.high)
+        )
+      )
+        throw new Error('Offset is outside the retained range for one or more partitions')
       await admin.setOffsets({
         groupId,
         topic,
@@ -768,27 +920,30 @@ class KafkaService {
           offset: String(offsetSpec.value)
         }))
       })
-    } else if (offsetSpec.type === 'timestamp') {
+    } else if (offsetSpec.type === 'to-timestamp') {
+      const ends = await admin.fetchTopicOffsets(topic)
       const offsetsByTimestamp = await admin.fetchTopicOffsetsByTimestamp(
         topic,
-        offsetSpec.value
+        Number(offsetSpec.value)
       )
       await admin.setOffsets({
         groupId,
         topic,
         partitions: offsetsByTimestamp.map((p) => ({
           partition: p.partition,
-          offset: p.offset
+          offset: p.offset === '-1' ? ends.find((e) => e.partition === p.partition)!.high : p.offset
         }))
       })
+    } else {
+      throw new Error('Choose a supported offset reset mode')
     }
   }
 
-  async deleteConsumerGroup(
-    clusterId: string,
-    groupId: string
-  ): Promise<void> {
+  async deleteConsumerGroup(clusterId: string, groupId: string): Promise<void> {
     const { admin } = this.getConnection(clusterId)
+    const described = await admin.describeGroups([groupId])
+    if (described.groups[0]?.members.length)
+      throw new Error('Stop the consumers before deleting this group')
     await admin.deleteGroups([groupId])
   }
 
@@ -804,15 +959,34 @@ class KafkaService {
       id: b.nodeId,
       host: b.host,
       port: b.port,
-      rack: (b as any).rack ?? undefined,
+      rack: (b as { rack?: string }).rack,
       isController: b.nodeId === cluster.controller
     }))
   }
 
-  async describeBrokerConfig(
-    clusterId: string,
-    brokerId: number
-  ): Promise<Record<string, string>> {
+  async describeClusterConfig(clusterId: string): Promise<Record<string, string>> {
+    const { admin } = this.getConnection(clusterId)
+    const { controller } = await admin.describeCluster()
+    if (controller === null)
+      throw new Error('Cluster controller metadata is unavailable. Refresh the broker list.')
+    const { resources } = await admin.describeConfigs({
+      includeSynonyms: true,
+      resources: [{ type: ConfigResourceTypes.BROKER, name: String(controller) }]
+    })
+    const defaults: Record<string, string> = {}
+    for (const entry of resources[0]?.configEntries ?? []) {
+      const value = [entry, ...(entry.configSynonyms ?? [])].find(
+        (c) =>
+          c.configSource === ConfigSource.DYNAMIC_DEFAULT_BROKER_CONFIG ||
+          c.configSource === ConfigSource.DEFAULT_CONFIG
+      )
+      if (value?.configValue !== null && value?.configValue !== undefined && !entry.isSensitive)
+        defaults[entry.configName] = value.configValue
+    }
+    return defaults
+  }
+
+  async describeBrokerConfig(clusterId: string, brokerId: number): Promise<Record<string, string>> {
     const { admin } = this.getConnection(clusterId)
 
     const { resources } = await admin.describeConfigs({
@@ -836,10 +1010,7 @@ class KafkaService {
   // Partitions
   // -----------------------------------------------------------------------
 
-  async getPartitions(
-    clusterId: string,
-    topic: string
-  ): Promise<PartitionInfo[]> {
+  async getPartitions(clusterId: string, topic: string): Promise<PartitionInfo[]> {
     const meta = await this.getTopicMetadata(clusterId, topic)
     return meta.partitions
   }
@@ -851,9 +1022,7 @@ class KafkaService {
   private getConnection(clusterId: string): KafkaConnection {
     const conn = this.connections.get(clusterId)
     if (!conn) {
-      throw new Error(
-        `No active connection for cluster "${clusterId}". Call connect() first.`
-      )
+      throw new Error(`No active connection for cluster "${clusterId}". Call connect() first.`)
     }
     return conn
   }
@@ -898,10 +1067,20 @@ class KafkaService {
       if (config.sslCertPath) {
         kafkaConfig.ssl = {
           rejectUnauthorized,
-          ca: [readFileSync(config.sslCertPath, 'utf-8')]
+          ca: [readFileSync(config.sslCertPath, 'utf-8')],
+          cert: config.sslClientCertPath
+            ? readFileSync(config.sslClientCertPath, 'utf8')
+            : undefined,
+          key: config.sslKeyPath ? readFileSync(config.sslKeyPath, 'utf8') : undefined
         }
       } else {
-        kafkaConfig.ssl = { rejectUnauthorized }
+        kafkaConfig.ssl = {
+          rejectUnauthorized,
+          cert: config.sslClientCertPath
+            ? readFileSync(config.sslClientCertPath, 'utf8')
+            : undefined,
+          key: config.sslKeyPath ? readFileSync(config.sslKeyPath, 'utf8') : undefined
+        }
       }
     }
 
@@ -913,22 +1092,67 @@ class KafkaService {
 // Helpers
 // ---------------------------------------------------------------------------
 
+async function mapConcurrent<T, R>(
+  items: T[],
+  limit: number,
+  read: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let next = 0
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const index = next++
+        results[index] = await read(items[index])
+      }
+    })
+  )
+  return results
+}
+
+function groupOffsetRows(
+  offsets: Awaited<ReturnType<Admin['fetchOffsets']>>,
+  high: Map<string, Map<number, number>>
+): ConsumerGroupOffsetInfo[] {
+  return offsets.flatMap(({ topic, partitions }) =>
+    partitions.map((p) => {
+      const currentOffset = Number(p.offset)
+      const logEndOffset = high.get(topic)?.get(p.partition)
+      if (logEndOffset === undefined || !Number.isFinite(logEndOffset) || logEndOffset < 0)
+        throw new Error(
+          `Could not read end offsets for "${topic}". Check broker access and refresh.`
+        )
+      return {
+        topic,
+        partition: p.partition,
+        currentOffset,
+        logEndOffset,
+        lag: currentOffset >= 0 ? Math.max(0, logEndOffset - currentOffset) : logEndOffset
+      }
+    })
+  )
+}
+
 function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message
-  return String(err)
+  const message = err instanceof Error ? err.message : String(err)
+  if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT|Connection error/i.test(message))
+    return 'Could not connect to a broker. Check bootstrap servers, network access, and advertised listener addresses.'
+  if (/SASL|authentication/i.test(message))
+    return 'Authentication failed. Check the selected SASL mechanism, username, and password.'
+  if (/certificate|TLS|SSL|ENOENT/i.test(message))
+    return 'TLS connection failed. Check CA, client certificate and key paths, and certificate validity.'
+  return message
 }
 
 /**
  * Parse the Kafka consumer protocol MemberAssignment bytes.
  * Format: Version(2) [TopicName(string) Partitions(int32[])]
  */
-function parseMemberAssignment(
-  buf: Buffer
-): Array<{ topic: string; partitions: number[] }> {
+function parseMemberAssignment(buf: Buffer): Array<{ topic: string; partitions: number[] }> {
   const results: Array<{ topic: string; partitions: number[] }> = []
   let offset = 0
 
-  if (buf.length < 4) return results
+  if (buf.length < 6) return results
 
   // version (int16)
   offset += 2
@@ -961,3 +1185,11 @@ function parseMemberAssignment(
 }
 
 export const kafkaService = new KafkaService()
+
+function decodeHeader(key: string, value: Buffer): string {
+  if (/original-partition$|retry-count$|deliveryAttempt$/.test(key) && value.length === 4)
+    return value.readInt32BE(0).toString()
+  if (/original-offset$|original-timestamp$/.test(key) && value.length === 8)
+    return value.readBigInt64BE(0).toString()
+  return value.toString('utf8')
+}

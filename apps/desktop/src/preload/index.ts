@@ -1,14 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { KafkaLensAPI } from '../shared/api'
+import type { IpcResult } from '../renderer/src/types'
 
-function invoke<T = unknown>(channel: string, ...args: unknown[]): Promise<T> {
+function invoke<T = void>(channel: string, ...args: unknown[]): Promise<IpcResult<T>> {
   return ipcRenderer.invoke(channel, ...args)
 }
 
-const api = {
+const api: KafkaLensAPI = {
   cluster: {
     testConnection: (config: unknown) => invoke('cluster:test-connection', config),
-    connect: (clusterId: string, config: unknown) =>
-      invoke('cluster:connect', clusterId, config),
+    connect: (clusterId: string, config: unknown) => invoke('cluster:connect', clusterId, config),
     disconnect: (clusterId: string) => invoke('cluster:disconnect', clusterId),
     isConnected: (clusterId: string) => invoke<boolean>('cluster:is-connected', clusterId),
     list: () => invoke('cluster:list'),
@@ -19,20 +20,20 @@ const api = {
 
   topics: {
     list: (clusterId: string) => invoke('topics:list', clusterId),
-    metadata: (clusterId: string, topic: string) =>
-      invoke('topics:metadata', clusterId, topic),
+    metadata: (clusterId: string, topic: string) => invoke('topics:metadata', clusterId, topic),
     config: (clusterId: string, topic: string) => invoke('topics:config', clusterId, topic),
     create: (clusterId: string, opts: unknown) => invoke('topics:create', clusterId, opts),
     delete: (clusterId: string, topic: string) => invoke('topics:delete', clusterId, topic),
     alterConfig: (clusterId: string, topic: string, configs: unknown) =>
       invoke('topics:alter-config', clusterId, topic, configs),
-    partitions: (clusterId: string, topic: string) =>
-      invoke('topics:partitions', clusterId, topic)
+    partitions: (clusterId: string, topic: string) => invoke('topics:partitions', clusterId, topic)
   },
 
   messages: {
+    page: (id, opts) => invoke('messages:page', id, opts),
     fetch: (clusterId: string, opts: unknown) => invoke('messages:fetch', clusterId, opts),
-    produce: (clusterId: string, opts: unknown) => invoke('messages:produce', clusterId, opts)
+    produce: (clusterId: string, opts: unknown) => invoke('messages:produce', clusterId, opts),
+    cancel: (requestId: string) => invoke('messages:cancel', requestId)
   },
 
   consumerGroups: {
@@ -49,28 +50,24 @@ const api = {
 
   brokers: {
     list: (clusterId: string) => invoke('brokers:list', clusterId),
-    config: (clusterId: string, brokerId: number) =>
-      invoke('brokers:config', clusterId, brokerId)
+    config: (clusterId: string, brokerId: number) => invoke('brokers:config', clusterId, brokerId),
+    history: (id, broker) => invoke('brokers:history', id, broker),
+    clusterConfig: (id) => invoke('brokers:cluster-config', id),
+    partitions: (id, broker) => invoke('brokers:partitions', id, broker)
   },
 
   schema: {
     configure: (clusterId: string, config: unknown) =>
       invoke('schema:configure', clusterId, config),
     subjects: (clusterId: string) => invoke('schema:subjects', clusterId),
-    versions: (clusterId: string, subject: string) =>
-      invoke('schema:versions', clusterId, subject),
+    versions: (clusterId: string, subject: string) => invoke('schema:versions', clusterId, subject),
     get: (clusterId: string, subject: string, version: number | string) =>
       invoke('schema:get', clusterId, subject, version),
-    getById: (clusterId: string, id: number) =>
-      invoke('schema:get-by-id', clusterId, id),
+    getById: (clusterId: string, id: number) => invoke('schema:get-by-id', clusterId, id),
     compatibility: (clusterId: string, subject: string) =>
       invoke('schema:compatibility', clusterId, subject),
-    checkCompatibility: (
-      clusterId: string,
-      subject: string,
-      schema: string,
-      schemaType: string
-    ) => invoke('schema:check-compatibility', clusterId, subject, schema, schemaType),
+    checkCompatibility: (clusterId: string, subject: string, schema: string, schemaType: string) =>
+      invoke('schema:check-compatibility', clusterId, subject, schema, schemaType),
     register: (clusterId: string, subject: string, schema: string, schemaType: string) =>
       invoke('schema:register', clusterId, subject, schema, schemaType),
     deleteVersion: (clusterId: string, subject: string, version: number | string) =>
@@ -88,7 +85,13 @@ const api = {
       invoke('ai:advise-topic', topicName, config, metrics),
     explainSchemaDiff: (subject: string, before: string, after: string) =>
       invoke('ai:explain-schema-diff', subject, before, after),
-    clusterHealth: (data: unknown) => invoke('ai:cluster-health', data)
+    clusterHealth: (data: unknown) => invoke('ai:cluster-health', data),
+    searchTopics: (query, topics) => invoke('ai:search-topics', query, topics),
+    lagAnomaly: (group, samples) => invoke('ai:lag-anomaly', group, samples),
+    models: (settings) => invoke('ai:models', settings),
+    cancel: () => invoke('ai:cancel'),
+    history: () => invoke('ai:history'),
+    clearHistory: () => invoke('ai:clear-history')
   },
 
   settings: {
@@ -112,19 +115,14 @@ const api = {
   },
 
   app: {
-    version: () => invoke<string>('app:version')
+    version: () => invoke<string>('app:version'),
+    selectCertificate: () => invoke('app:select-certificate'),
+    checkUpdate: () => invoke('app:check-update'),
+    updateState: () => invoke('app:update-state'),
+    downloadUpdate: () => invoke('app:download-update'),
+    installUpdate: () => invoke('app:install-update')
   }
 }
 
-export type KafkaLensAPI = typeof api
-
-if (process.contextIsolated) {
-  try {
-    contextBridge.exposeInMainWorld('api', api)
-  } catch (error) {
-    console.error(error)
-  }
-} else {
-  // @ts-ignore fallback for non-isolated context
-  window.api = api
-}
+export type { KafkaLensAPI } from '../shared/api'
+contextBridge.exposeInMainWorld('api', api)

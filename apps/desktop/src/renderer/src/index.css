@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 @theme {
   --color-surface-0: #08080d;
@@ -10,13 +10,13 @@
   --color-border-bright: #3a3a52;
   --color-text-primary: #e8e8f0;
   --color-text-secondary: #9898b0;
-  --color-text-muted: #5e5e78;
-  --color-accent: #6366f1;
-  --color-accent-hover: #818cf8;
+  --color-text-muted: #9696b0;
+  --color-accent: #595ddc;
+  --color-accent-hover: #6265e4;
   --color-accent-muted: #6366f120;
   --color-success: #22c55e;
   --color-warning: #f59e0b;
-  --color-danger: #ef4444;
+  --color-danger: #d63939;
   --color-info: #3b82f6;
 
   --color-env-local: #6366f1;
@@ -50,18 +50,35 @@ body {
 }
 
 @keyframes fade-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes slide-in-right {
-  from { opacity: 0; transform: translateX(12px); }
-  to { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 @keyframes pulse-glow {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }
 
 .animate-fade-in {
@@ -91,6 +108,29 @@ body {
   background: var(--color-border-bright);
 }
 
-pre, code {
+pre,
+code {
   font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+}
+
+:root {
+  --app-font-size: 14px;
+}
+html {
+  font-size: var(--app-font-size);
+}
+:focus-visible {
+  outline: 2px solid var(--color-accent, #818cf8);
+  outline-offset: 2px;
+}
+
+/* Text and filled controls need different accent luminance for AA contrast. */
+.text-accent,
+.text-accent-hover,
+.hover\:text-accent-hover:hover {
+  color: #aaa9ff;
+}
+.text-danger,
+.hover\:text-danger:hover {
+  color: #ff8080;
 }

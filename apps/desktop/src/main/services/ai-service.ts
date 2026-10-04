@@ -1,270 +1,264 @@
 import { SYSTEM_PROMPTS } from '../prompts'
-
-type AIProvider = 'openai' | 'anthropic' | 'google'
-
-interface AIConfig {
-  provider: AIProvider
-  apiKey: string
-  model: string
-  redactedFields: string[]
-}
-
-interface AIResponse {
-  content: string
-  usage?: { promptTokens: number; completionTokens: number }
-}
-
-const PROVIDER_DEFAULTS: Record<AIProvider, { url: string; model: string }> = {
-  openai: { url: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o' },
-  anthropic: { url: 'https://api.anthropic.com/v1/messages', model: 'claude-sonnet-4-20250514' },
-  google: { url: 'https://generativelanguage.googleapis.com/v1beta/models', model: 'gemini-2.0-flash' },
-}
-
-function redactPayload(payload: string, redactedFields: string[]): string {
-  if (!redactedFields.length) return payload
+import type {
+  AISettings,
+  AIResponse,
+  AIFeature,
+  TopicMatch,
+  LagSample,
+  TopicMetrics,
+  ClusterHealthContext
+} from '../../renderer/src/types'
+export function redactPayload(payload: string, fields: string[]): string {
+  if (!fields.length) return payload
+  const redactText = (text: string): string =>
+    fields.reduce(
+      (value, field) =>
+        value.replace(
+          new RegExp(
+            `(${field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[:=]\\s*)(?:"[^"\\r\\n]*"|'[^'\\r\\n]*'|[^\\s,;]+)`,
+            'gi'
+          ),
+          '$1[REDACTED]'
+        ),
+      text
+    )
+  const visit = (value: unknown, depth = 0): unknown => {
+    if (depth >= 100) return '[TRUNCATED]'
+    if (typeof value === 'string') return redactText(value)
+    if (Array.isArray(value)) return value.map((v) => visit(v, depth + 1))
+    if (value && typeof value === 'object')
+      return Object.fromEntries(
+        Object.entries(value).map(([key, v]) => [
+          key,
+          fields.some((f) => key.toLowerCase().includes(f.toLowerCase()))
+            ? '[REDACTED]'
+            : visit(v, depth + 1)
+        ])
+      )
+    return value
+  }
+  let parsed: unknown
   try {
-    const obj = JSON.parse(payload)
-    redactObject(obj, redactedFields)
-    return JSON.stringify(obj, null, 2)
+    parsed = JSON.parse(payload)
   } catch {
-    return payload
+    return redactText(payload)
   }
+  return JSON.stringify(visit(parsed), null, 2)
 }
 
-function redactObject(obj: unknown, fields: string[]): void {
-  if (!obj || typeof obj !== 'object') return
-  if (Array.isArray(obj)) {
-    obj.forEach((item) => redactObject(item, fields))
-    return
+interface ProviderResponse {
+  choices?: { message?: { content?: string }; finish_reason?: string }[]
+  content?: { text?: string }[]
+  candidates?: { content?: { parts?: { text?: string }[] } }[]
+  usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    input_tokens?: number
+    output_tokens?: number
   }
-  for (const key of Object.keys(obj as Record<string, unknown>)) {
-    if (fields.some((f) => key.toLowerCase().includes(f.toLowerCase()))) {
-      ;(obj as Record<string, unknown>)[key] = '[REDACTED]'
-    } else {
-      redactObject((obj as Record<string, unknown>)[key], fields)
-    }
-  }
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }
 }
-
-class AIService {
-  private config: AIConfig | null = null
-
-  configure(config: Record<string, unknown>): void {
-    this.config = {
-      provider: (config.provider as AIProvider) ?? 'openai',
-      apiKey: String(config.apiKey ?? ''),
-      model: String(config.model ?? PROVIDER_DEFAULTS[(config.provider as AIProvider) ?? 'openai'].model),
-      redactedFields: Array.isArray(config.redactedFields)
-        ? config.redactedFields.map(String)
-        : typeof config.redactedFields === 'string'
-          ? config.redactedFields.split(',').map((s: string) => s.trim()).filter(Boolean)
-          : []
-    }
+export class AIService {
+  private config: AISettings | null = null
+  private historyRecorder?: (feature: AIFeature, settings: AISettings, response: AIResponse) => void
+  setHistoryRecorder(
+    record: (feature: AIFeature, settings: AISettings, response: AIResponse) => void
+  ): void {
+    this.historyRecorder = record
   }
-
+  private requests = new Set<AbortController>()
+  configure(config: AISettings): void {
+    this.cancel()
+    this.config = { ...config, redactedFields: config.redactedFields.filter(Boolean) }
+  }
+  cancel(): void {
+    for (const request of this.requests) request.abort()
+    this.requests.clear()
+  }
   isConfigured(): boolean {
-    return this.config !== null && this.config.apiKey.length > 0
+    return !!(this.config?.enabled && this.config?.consent && this.config.apiKey)
   }
-
+  private assertFeature(feature: AIFeature): AISettings {
+    if (!this.isConfigured())
+      throw new Error('Enable AI, accept payload sharing, and add an API key in Settings.')
+    if (
+      this.config!.features?.[feature] === false ||
+      (feature === 'anomalies' && this.config!.features?.anomalies !== true)
+    )
+      throw new Error('This AI feature is disabled in Settings.')
+    return this.config!
+  }
   async explainMessage(payload: string, schema?: string): Promise<AIResponse> {
-    const redacted = this.redact(payload)
-    let userPrompt = `Kafka message payload:\n\`\`\`json\n${redacted}\n\`\`\``
-    if (schema) {
-      userPrompt += `\n\nSchema:\n\`\`\`\n${schema}\n\`\`\``
-    }
-    return this.chat(SYSTEM_PROMPTS.explainMessage, userPrompt)
+    return this.chat(
+      'messages',
+      SYSTEM_PROMPTS.explainMessage,
+      JSON.stringify({
+        payload: parsePayload(payload),
+        schema: parsePayload(schema ?? 'No schema')
+      })
+    )
   }
-
-  async analyzeDLQRootCause(
-    exceptionClass: string,
-    exceptionMessage: string,
-    payload: string
-  ): Promise<AIResponse> {
-    const redacted = this.redact(payload)
-    const userPrompt = [
-      `Exception class: ${exceptionClass}`,
-      `Exception message: ${exceptionMessage}`,
-      `\nMessage payload:\n\`\`\`json\n${redacted}\n\`\`\``
-    ].join('\n')
-    return this.chat(SYSTEM_PROMPTS.analyzeDLQRootCause, userPrompt)
+  async analyzeDLQRootCause(kind: string, message: string, payload: string): Promise<AIResponse> {
+    return this.chat(
+      'dlq',
+      SYSTEM_PROMPTS.analyzeDLQRootCause,
+      JSON.stringify({
+        exceptionClass: kind,
+        exceptionMessage: message,
+        payload: parsePayload(payload)
+      })
+    )
   }
-
   async adviseTopicConfig(
-    topicName: string,
-    config: Record<string, string>,
-    metrics: { messageCount: number; partitions: number; consumerLag: number }
+    topic: string,
+    configs: Record<string, string>,
+    metrics: TopicMetrics
   ): Promise<AIResponse> {
-    const userPrompt = [
-      `Topic: ${topicName}`,
-      `\nConfiguration:\n\`\`\`json\n${JSON.stringify(config, null, 2)}\n\`\`\``,
-      `\nMetrics:`,
-      `- Message count: ${metrics.messageCount}`,
-      `- Partitions: ${metrics.partitions}`,
-      `- Consumer lag: ${metrics.consumerLag}`
-    ].join('\n')
-    return this.chat(SYSTEM_PROMPTS.adviseTopicConfig, userPrompt)
+    return this.chat(
+      'topics',
+      SYSTEM_PROMPTS.adviseTopicConfig,
+      JSON.stringify({ topic, configs, metrics })
+    )
   }
-
   async explainSchemaDiff(subject: string, before: string, after: string): Promise<AIResponse> {
-    const userPrompt = [
-      `Schema subject: ${subject}`,
-      `\nPrevious version:\n\`\`\`\n${before}\n\`\`\``,
-      `\nNew version:\n\`\`\`\n${after}\n\`\`\``
-    ].join('\n')
-    return this.chat(SYSTEM_PROMPTS.explainSchemaDiff, userPrompt)
+    return this.chat(
+      'schemas',
+      SYSTEM_PROMPTS.explainSchemaDiff,
+      JSON.stringify({ subject, before: parsePayload(before), after: parsePayload(after) })
+    )
   }
-
-  async summarizeClusterHealth(data: {
-    topics: number
-    consumerGroups: number
-    brokers: number
-    underReplicatedPartitions: number
-    totalLag: number
-    dlqMessages: number
-  }): Promise<AIResponse> {
-    const userPrompt = [
-      'Cluster statistics:',
-      `- Topics: ${data.topics}`,
-      `- Consumer groups: ${data.consumerGroups}`,
-      `- Brokers: ${data.brokers}`,
-      `- Under-replicated partitions: ${data.underReplicatedPartitions}`,
-      `- Total consumer lag: ${data.totalLag}`,
-      `- DLQ messages: ${data.dlqMessages}`
-    ].join('\n')
-    return this.chat(SYSTEM_PROMPTS.summarizeClusterHealth, userPrompt)
+  async summarizeClusterHealth(data: ClusterHealthContext): Promise<AIResponse> {
+    return this.chat('health', SYSTEM_PROMPTS.summarizeClusterHealth, JSON.stringify(data))
   }
-
-  private redact(payload: string): string {
-    return redactPayload(payload, this.config?.redactedFields ?? [])
+  async searchTopics(query: string, topics: string[]): Promise<TopicMatch[]> {
+    const response = await this.chat(
+      'search',
+      SYSTEM_PROMPTS.searchTopics,
+      JSON.stringify({ query, topics })
+    )
+    const value: unknown = JSON.parse(response.content.replace(/^```(?:json)?\s*|\s*```$/g, ''))
+    if (!Array.isArray(value))
+      throw new Error('AI returned an invalid topic search response. Try again.')
+    const known = new Set(topics)
+    return value
+      .filter(
+        (v): v is TopicMatch =>
+          !!v && typeof v.name === 'string' && typeof v.reason === 'string' && known.has(v.name)
+      )
+      .slice(0, 20)
   }
-
-  private async chat(systemPrompt: string, userPrompt: string): Promise<AIResponse> {
-    if (!this.config || !this.config.apiKey) {
-      throw new Error('AI is not configured. Add your API key in Settings.')
-    }
-
-    const { provider } = this.config
-
-    switch (provider) {
-      case 'openai':
-        return this.chatOpenAI(systemPrompt, userPrompt)
-      case 'anthropic':
-        return this.chatAnthropic(systemPrompt, userPrompt)
-      case 'google':
-        return this.chatGoogle(systemPrompt, userPrompt)
-      default:
-        throw new Error(`Unsupported AI provider: ${provider}`)
-    }
+  async lagAnomaly(group: string, samples: LagSample[]): Promise<AIResponse> {
+    return this.chat('anomalies', SYSTEM_PROMPTS.lagAnomaly, JSON.stringify({ group, samples }))
   }
-
-  private async chatOpenAI(systemPrompt: string, userPrompt: string): Promise<AIResponse> {
-    const { apiKey, model } = this.config!
-
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model,
+  async models(settings: AISettings): Promise<string[]> {
+    if (settings.provider !== 'openai')
+      throw new Error('Enter a custom model name for this provider.')
+    const response = await fetch('https://api.openai.com/v1/models', {
+      headers: { Authorization: `Bearer ${settings.apiKey}` },
+      signal: AbortSignal.timeout(15000)
+    })
+    if (!response.ok)
+      throw new Error('Could not list models. Check the API key and provider permissions.')
+    const data = (await response.json()) as { data: { id: string }[] }
+    return data.data
+      .map((m) => m.id)
+      .filter((id) => /^(gpt-|o[1-9])/.test(id))
+      .sort()
+  }
+  private async chat(feature: AIFeature, system: string, payload: string): Promise<AIResponse> {
+    const config = this.assertFeature(feature)
+    const user = redactPayload(payload, config.redactedFields)
+    if (user.length > 500000)
+      throw new Error(
+        'This payload is too large for AI. Select a smaller message or configuration.'
+      )
+    const controller = new AbortController()
+    this.requests.add(controller)
+    const timer = setTimeout(() => controller.abort(), 30000)
+    let url: string
+    let headers: Record<string, string>
+    let body: unknown
+    if (config.provider === 'openai') {
+      url = 'https://api.openai.com/v1/chat/completions'
+      headers = { Authorization: `Bearer ${config.apiKey}` }
+      body = {
+        model: config.model,
         messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
+          { role: 'system', content: system },
+          { role: 'user', content: user }
         ],
         max_completion_tokens: 4096
-      })
-    })
-
-    if (!res.ok) {
-      const body = await res.text()
-      throw new Error(`OpenAI API error (${res.status}): ${body}`)
-    }
-
-    const data = await res.json()
-    const choice = data.choices?.[0]
-    const content = choice?.message?.content ?? ''
-
-    if (!content && choice?.finish_reason === 'length') {
-      return {
-        content: 'The response was too long and got truncated. Try a model with a larger context window.',
-        usage: data.usage ? { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens } : undefined
+      }
+    } else if (config.provider === 'anthropic') {
+      url = 'https://api.anthropic.com/v1/messages'
+      headers = { 'x-api-key': config.apiKey, 'anthropic-version': '2023-06-01' }
+      body = {
+        model: config.model,
+        system,
+        messages: [{ role: 'user', content: user }],
+        max_tokens: 4096
+      }
+    } else {
+      url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.model)}:generateContent`
+      headers = { 'x-goog-api-key': config.apiKey }
+      body = {
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ parts: [{ text: user }] }],
+        generationConfig: { maxOutputTokens: 4096 }
       }
     }
-
-    return {
-      content: content || 'AI returned an empty response.',
-      usage: data.usage
-        ? { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens }
-        : undefined
-    }
-  }
-
-  private async chatAnthropic(systemPrompt: string, userPrompt: string): Promise<AIResponse> {
-    const { apiKey, model } = this.config!
-
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 4096,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }]
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal
       })
-    })
-
-    if (!res.ok) {
-      const body = await res.text()
-      throw new Error(`Anthropic API error (${res.status}): ${body}`)
-    }
-
-    const data = await res.json()
-    const content = data.content?.[0]?.text ?? ''
-
-    return {
-      content: content || 'AI returned an empty response.',
-      usage: data.usage
-        ? { promptTokens: data.usage.input_tokens, completionTokens: data.usage.output_tokens }
-        : undefined
-    }
-  }
-
-  private async chatGoogle(systemPrompt: string, userPrompt: string): Promise<AIResponse> {
-    const { apiKey, model } = this.config!
-
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`
-
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ parts: [{ text: userPrompt }] }],
-        generationConfig: { maxOutputTokens: 4096 }
-      })
-    })
-
-    if (!res.ok) {
-      const body = await res.text()
-      throw new Error(`Google AI API error (${res.status}): ${body}`)
-    }
-
-    const data = await res.json()
-    const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
-    const usage = data.usageMetadata
-
-    return {
-      content: content || 'AI returned an empty response.',
-      usage: usage
-        ? { promptTokens: usage.promptTokenCount ?? 0, completionTokens: usage.candidatesTokenCount ?? 0 }
-        : undefined
+      if (!response.ok)
+        throw new Error(
+          `AI request failed (${response.status}). Check your API key, model access, and provider quota.`
+        )
+      const data = (await response.json()) as ProviderResponse
+      const content =
+        data.choices?.[0]?.message?.content ??
+        data.content?.map((c) => c.text ?? '').join('') ??
+        data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ??
+        ''
+      if (!content)
+        throw new Error('AI returned no text. Try a different model or a smaller input.')
+      const result: AIResponse = {
+        content,
+        usage: {
+          promptTokens:
+            data.usage?.prompt_tokens ??
+            data.usage?.input_tokens ??
+            data.usageMetadata?.promptTokenCount ??
+            0,
+          completionTokens:
+            data.usage?.completion_tokens ??
+            data.usage?.output_tokens ??
+            data.usageMetadata?.candidatesTokenCount ??
+            0
+        }
+      }
+      if (config.historyEnabled && !controller.signal.aborted)
+        this.historyRecorder?.(feature, config, result)
+      return result
+    } catch (error) {
+      if (controller.signal.aborted)
+        throw new Error('AI request cancelled or timed out. Try again.')
+      throw error
+    } finally {
+      clearTimeout(timer)
+      this.requests.delete(controller)
     }
   }
 }
-
+function parsePayload(value: string): unknown {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return value
+  }
+}
 export const aiService = new AIService()

@@ -1,614 +1,332 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
-import {
-  RefreshCw,
-  Search,
-  ChevronDown,
-  ChevronRight,
-  Users,
-  RotateCcw,
-  Trash2,
-  X,
-  AlertTriangle,
-  Loader2
-} from 'lucide-react'
-import { useDataStore } from '@/stores/dataStore'
+import { useEffect, useState } from 'react'
 import { useClusterStore } from '@/stores/clusterStore'
+import { useDataStore } from '@/stores/dataStore'
 import { useUIStore } from '@/stores/uiStore'
-import type { ConsumerGroup, ConsumerGroupOffset } from '@/types'
-
-const STATE_STYLES: Record<ConsumerGroup['state'], string> = {
-  Stable: 'bg-success/15 text-success',
-  Rebalancing: 'bg-warning/15 text-warning',
-  Empty: 'bg-surface-4 text-text-muted',
-  Dead: 'bg-danger/15 text-danger',
-  PreparingRebalance: 'bg-info/15 text-info'
-}
-
-function SkeletonRow() {
+import { useConfirmation } from '@/components/common/ConfirmationDialog'
+import { Button, Input, Select } from '@/components/common/Controls'
+import { download, csv } from '@/lib/files'
+import { useRefresh } from '@/lib/useRefresh'
+import type { GroupDetail, OffsetSpec, LagSample } from '@/types'
+function LagChart({ samples }: { samples: LagSample[] }) {
+  if (samples.length < 2)
+    return <p className="text-xs text-text-muted">Collecting lag samples every 15 seconds…</p>
+  const max = Math.max(1, ...samples.map((s) => s.lag))
   return (
-    <tr className="border-b border-border/50">
-      <td className="w-8 pl-3">
-        <div className="h-3 w-3 animate-pulse rounded bg-surface-3" />
-      </td>
-      {[...Array(6)].map((_, i) => (
-        <td key={i} className="px-4 py-3">
-          <div
-            className="h-3 animate-pulse rounded bg-surface-3"
-            style={{ width: `${30 + Math.random() * 50}%` }}
-          />
-        </td>
-      ))}
-    </tr>
+    <svg
+      role="img"
+      aria-label="Consumer lag over this session"
+      viewBox="0 0 600 100"
+      className="h-24 w-full"
+    >
+      <polyline
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        className="text-accent"
+        points={samples
+          .map((s, i) => `${(i / (samples.length - 1)) * 600},${95 - (s.lag / max) * 90}`)
+          .join(' ')}
+      />
+      <text x="0" y="12" fill="currentColor" fontSize="10">
+        Peak {max.toLocaleString()} · {new Date(samples[0].at).toLocaleTimeString()} –{' '}
+        {new Date(samples.at(-1)!.at).toLocaleTimeString()}
+      </text>
+    </svg>
   )
 }
-
-function LagBar({ lag, maxLag }: { lag: number; maxLag: number }) {
-  const pct = maxLag > 0 ? Math.min((lag / maxLag) * 100, 100) : 0
-  const color = lag >= 10_000 ? 'bg-danger' : lag >= 100 ? 'bg-warning' : 'bg-success'
-
-  return (
-    <div className="flex items-center gap-2">
-      <span className="w-14 tabular-nums text-right text-xs">{lag.toLocaleString()}</span>
-      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3">
-        <div className={`h-full rounded-full ${color} transition-all`} style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  )
-}
-
-function ExpandedOffsets({
-  groupId,
-  clusterId
-}: {
-  groupId: string
-  clusterId: string
-}) {
-  const { consumerGroupOffsets, fetchConsumerGroupOffsets } = useDataStore()
-  const [loading, setLoading] = useState(false)
-  const fetchedRef = useRef(false)
-
-  const offsets = consumerGroupOffsets[groupId] ?? []
-
+export default function ConsumerGroups() {
+  const { activeClusterId, clusters } = useClusterStore()
+  const {
+    consumerGroups,
+    consumerGroupsLoading,
+    consumerGroupOffsets,
+    fetchConsumerGroups,
+    fetchConsumerGroupOffsets,
+    resetOffsets,
+    deleteConsumerGroup,
+    lagHistory
+  } = useDataStore()
+  const notify = useUIStore((s) => s.addNotification)
+  const { confirm, dialog } = useConfirmation()
+  const [search, setSearch] = useState('')
+  const [selected, setSelected] = useState('')
+  const [detail, setDetail] = useState<GroupDetail | null>(null)
+  const [topic, setTopic] = useState('')
+  const [mode, setMode] = useState<OffsetSpec['type']>('earliest')
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState(false)
+  const production = clusters.find((c) => c.id === activeClusterId)?.environmentLabel === 'prod'
+  const group = consumerGroups.find((g) => g.groupId === selected)
+  const offsets = consumerGroupOffsets[selected] ?? []
+  async function refresh() {
+    if (activeClusterId) {
+      await fetchConsumerGroups(activeClusterId)
+      if (selected) await fetchConsumerGroupOffsets(activeClusterId, selected)
+    }
+  }
+  useRefresh(refresh)
   useEffect(() => {
-    if (fetchedRef.current) return
-    fetchedRef.current = true
-    setLoading(true)
-    fetchConsumerGroupOffsets(clusterId, groupId).finally(() => setLoading(false))
-  }, [clusterId, groupId, fetchConsumerGroupOffsets])
-
-  const maxLag = useMemo(() => Math.max(...offsets.map((o) => o.lag), 1), [offsets])
-
-  if (loading && offsets.length === 0) {
-    return (
-      <div className="flex items-center gap-2 px-6 py-4 text-xs text-text-muted">
-        <Loader2 className="h-3 w-3 animate-spin" />
-        Loading offset data...
-      </div>
+    setSelected('')
+    setDetail(null)
+    if (activeClusterId) void fetchConsumerGroups(activeClusterId)
+  }, [activeClusterId, fetchConsumerGroups])
+  useEffect(() => {
+    let alive = true
+    setDetail(null)
+    setTopic(group?.topics[0] ?? '')
+    if (activeClusterId && selected) {
+      void fetchConsumerGroupOffsets(activeClusterId, selected)
+      void window.api.consumerGroups.describe(activeClusterId, selected).then((r) => {
+        if (alive) {
+          if (r.success) setDetail(r.data ?? null)
+          else notify('error', r.error ?? 'Could not load members')
+        }
+      })
+    }
+    return () => {
+      alive = false
+    }
+  }, [activeClusterId, selected])
+  async function reset() {
+    if (!activeClusterId || !topic) return
+    const spec: OffsetSpec = { type: mode }
+    if (mode === 'to-offset') {
+      if (!/^\d+$/.test(value)) {
+        notify('error', 'Enter a non-negative offset')
+        return
+      }
+      spec.value = value
+    }
+    if (mode === 'to-timestamp') {
+      const time = Date.parse(value)
+      if (!Number.isFinite(time)) {
+        notify('error', 'Choose a valid timestamp')
+        return
+      }
+      spec.value = time
+    }
+    if (
+      !(await confirm({
+        title: 'Reset consumer offsets',
+        message: `Reset ${selected} on ${topic} to ${mode}${value ? ' ' + value : ''}. Stop all members first.`,
+        resource: selected,
+        production
+      }))
     )
+      return
+    setBusy(true)
+    const ok = await resetOffsets(activeClusterId, selected, topic, spec)
+    setBusy(false)
+    if (ok) notify('success', 'Consumer offsets reset')
   }
-
-  if (offsets.length === 0) {
-    return (
-      <div className="px-6 py-4 text-xs text-text-muted">No offset data available for this group.</div>
+  async function remove() {
+    if (
+      !activeClusterId ||
+      !(await confirm({
+        title: 'Delete consumer group',
+        message: `Delete ${selected} and its committed offsets?`,
+        resource: selected,
+        production
+      }))
     )
+      return
+    setBusy(true)
+    if (await deleteConsumerGroup(activeClusterId, selected)) setSelected('')
+    setBusy(false)
   }
-
   return (
-    <div className="animate-fade-in px-4 pb-3">
+    <div className="p-6 space-y-4">
+      <div className="flex items-center gap-3">
+        <h1 className="text-lg font-semibold">Consumer Groups</h1>
+        <Input
+          aria-label="Filter groups"
+          placeholder="Filter groups…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <Button onClick={refresh} disabled={consumerGroupsLoading}>
+          Refresh
+        </Button>
+      </div>
+      {consumerGroupsLoading && (
+        <p role="status" className="animate-pulse">
+          Loading consumer groups…
+        </p>
+      )}
       <table className="w-full text-xs">
         <thead>
-          <tr className="border-b border-border text-text-muted">
-            <th className="px-3 py-2 text-left font-medium">Topic</th>
-            <th className="px-3 py-2 text-right font-medium">Partition</th>
-            <th className="px-3 py-2 text-right font-medium">Current Offset</th>
-            <th className="px-3 py-2 text-right font-medium">Log End Offset</th>
-            <th className="w-48 px-3 py-2 font-medium">Lag</th>
-            <th className="px-3 py-2 text-right font-medium">Last Committed</th>
+          <tr>
+            {['Group', 'State', 'Protocol', 'Members', 'Topics', 'Total lag'].map((h) => (
+              <th key={h} className="text-left p-2">
+                {h}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
-          {offsets.map((o) => (
-            <tr
-              key={`${o.topic}-${o.partition}`}
-              className="border-b border-border/50 text-text-secondary hover:bg-surface-3/50"
-            >
-              <td className="px-3 py-1.5 font-mono text-text-primary">{o.topic}</td>
-              <td className="px-3 py-1.5 text-right tabular-nums">{o.partition}</td>
-              <td className="px-3 py-1.5 text-right tabular-nums">
-                {o.currentOffset.toLocaleString()}
-              </td>
-              <td className="px-3 py-1.5 text-right tabular-nums">
-                {o.logEndOffset.toLocaleString()}
-              </td>
-              <td className="px-3 py-1.5">
-                <LagBar lag={o.lag} maxLag={maxLag} />
-              </td>
-              <td className="px-3 py-1.5 text-right text-text-muted">
-                {o.lastCommittedAt ? new Date(o.lastCommittedAt).toLocaleTimeString() : '—'}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-type ResetMode = 'earliest' | 'latest' | 'to-offset' | 'to-timestamp'
-
-function ResetOffsetsDropdown({
-  groupId,
-  topics,
-  clusterId,
-  isProd,
-  onClose
-}: {
-  groupId: string
-  topics: string[]
-  clusterId: string
-  isProd: boolean
-  onClose: () => void
-}) {
-  const { resetOffsets } = useDataStore()
-  const { addNotification } = useUIStore()
-
-  const [mode, setMode] = useState<ResetMode>('earliest')
-  const [offsetValue, setOffsetValue] = useState('')
-  const [timestampValue, setTimestampValue] = useState('')
-  const [selectedTopic, setSelectedTopic] = useState(topics[0] ?? '')
-  const [confirmText, setConfirmText] = useState('')
-  const [showConfirm, setShowConfirm] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-
-  const handleReset = async () => {
-    if (isProd && !showConfirm) {
-      setShowConfirm(true)
-      return
-    }
-
-    if (isProd && confirmText !== groupId) {
-      addNotification('error', 'Group ID confirmation does not match')
-      return
-    }
-
-    setSubmitting(true)
-    try {
-      const spec = (() => {
-        switch (mode) {
-          case 'earliest':
-            return { type: 'earliest' as const }
-          case 'latest':
-            return { type: 'latest' as const }
-          case 'to-offset':
-            return { type: 'to-offset' as const, value: parseInt(offsetValue, 10) }
-          case 'to-timestamp':
-            return { type: 'to-timestamp' as const, value: new Date(timestampValue).getTime() }
-        }
-      })()
-
-      const success = await resetOffsets(clusterId, groupId, selectedTopic, spec)
-      if (success) {
-        addNotification('success', `Offsets reset to ${mode} for group ${groupId}`)
-        onClose()
-      } else {
-        addNotification('error', `Failed to reset offsets for group ${groupId}`)
-      }
-    } catch {
-      addNotification('error', `Failed to reset offsets for group ${groupId}`)
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div
-        className="w-full max-w-md rounded-xl border border-border bg-surface-1 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-border px-5 py-3">
-          <h3 className="text-sm font-semibold text-text-primary">Reset Offsets</h3>
-          <button onClick={onClose} className="text-text-muted hover:text-text-primary transition-colors">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="flex flex-col gap-4 px-5 py-4">
-          <div className="flex items-center gap-2 text-xs text-text-muted">
-            <span className="text-text-secondary">Group:</span>
-            <span className="font-mono text-accent">{groupId}</span>
-          </div>
-
-          {/* Topic selector */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-text-secondary">Topic</label>
-            <select
-              value={selectedTopic}
-              onChange={(e) => setSelectedTopic(e.target.value)}
-              className="rounded-md border border-border bg-surface-0 px-3 py-2 text-xs text-text-primary focus:border-accent focus:outline-none"
-            >
-              {topics.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Reset mode */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-text-secondary">Reset To</label>
-            <div className="grid grid-cols-2 gap-2">
-              {(
-                [
-                  { value: 'earliest', label: 'Earliest' },
-                  { value: 'latest', label: 'Latest' },
-                  { value: 'to-offset', label: 'Specific Offset' },
-                  { value: 'to-timestamp', label: 'Specific Timestamp' }
-                ] as const
-              ).map((opt) => (
-                <button
-                  key={opt.value}
-                  onClick={() => {
-                    setMode(opt.value)
-                    setShowConfirm(false)
-                  }}
-                  className={`rounded-md border px-3 py-2 text-xs font-medium transition-colors ${
-                    mode === opt.value
-                      ? 'border-accent bg-accent/10 text-accent'
-                      : 'border-border bg-surface-0 text-text-secondary hover:bg-surface-2'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {mode === 'to-offset' && (
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-text-secondary">Offset</label>
-              <input
-                type="number"
-                value={offsetValue}
-                onChange={(e) => setOffsetValue(e.target.value)}
-                placeholder="Enter offset number"
-                min={0}
-                className="rounded-md border border-border bg-surface-0 px-3 py-2 text-xs text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
-              />
-            </div>
-          )}
-
-          {mode === 'to-timestamp' && (
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-text-secondary">Timestamp</label>
-              <input
-                type="datetime-local"
-                value={timestampValue}
-                onChange={(e) => setTimestampValue(e.target.value)}
-                className="rounded-md border border-border bg-surface-0 px-3 py-2 text-xs text-text-primary focus:border-accent focus:outline-none"
-              />
-            </div>
-          )}
-
-          {isProd && showConfirm && (
-            <div className="flex flex-col gap-2 rounded-md border border-danger/30 bg-danger/5 p-3">
-              <div className="flex items-center gap-2 text-xs font-medium text-danger">
-                <AlertTriangle className="h-3.5 w-3.5" />
-                Production Cluster — Confirm Reset
-              </div>
-              <p className="text-xs text-text-muted">
-                Type the group ID <span className="font-mono text-text-primary">{groupId}</span> to confirm:
-              </p>
-              <input
-                type="text"
-                value={confirmText}
-                onChange={(e) => setConfirmText(e.target.value)}
-                placeholder={groupId}
-                className="rounded-md border border-danger/30 bg-surface-0 px-3 py-2 text-xs text-text-primary placeholder:text-text-muted focus:border-danger focus:outline-none"
-              />
-            </div>
-          )}
-        </div>
-
-        <div className="flex justify-end gap-3 border-t border-border px-5 py-3">
-          <button
-            onClick={onClose}
-            className="rounded-md border border-border bg-surface-0 px-4 py-2 text-xs font-medium text-text-secondary hover:bg-surface-2 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleReset}
-            disabled={
-              submitting ||
-              (mode === 'to-offset' && !offsetValue) ||
-              (mode === 'to-timestamp' && !timestampValue)
-            }
-            className="flex items-center gap-2 rounded-md bg-warning/90 px-4 py-2 text-xs font-medium text-white hover:bg-warning transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {submitting ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-            {submitting ? 'Resetting...' : isProd && !showConfirm ? 'Continue' : 'Reset Offsets'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function DeleteConfirmDialog({
-  groupId,
-  clusterId,
-  onClose
-}: {
-  groupId: string
-  clusterId: string
-  onClose: () => void
-}) {
-  const { deleteConsumerGroup } = useDataStore()
-  const { addNotification } = useUIStore()
-  const [deleting, setDeleting] = useState(false)
-
-  const handleDelete = async () => {
-    setDeleting(true)
-    try {
-      const success = await deleteConsumerGroup(clusterId, groupId)
-      if (success) {
-        addNotification('success', `Consumer group ${groupId} deleted`)
-        onClose()
-      } else {
-        addNotification('error', `Failed to delete consumer group ${groupId}`)
-      }
-    } catch {
-      addNotification('error', `Failed to delete consumer group ${groupId}`)
-    } finally {
-      setDeleting(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div
-        className="w-full max-w-sm rounded-xl border border-border bg-surface-1 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex flex-col gap-3 px-5 py-5">
-          <div className="flex items-center gap-3">
-            <div className="rounded-full bg-danger/10 p-2">
-              <AlertTriangle className="h-5 w-5 text-danger" />
-            </div>
-            <h3 className="text-sm font-semibold text-text-primary">Delete Consumer Group</h3>
-          </div>
-          <p className="text-xs text-text-muted">
-            Are you sure you want to delete{' '}
-            <span className="font-mono text-text-primary">{groupId}</span>? This action cannot be undone.
-          </p>
-        </div>
-
-        <div className="flex justify-end gap-3 border-t border-border px-5 py-3">
-          <button
-            onClick={onClose}
-            className="rounded-md border border-border bg-surface-0 px-4 py-2 text-xs font-medium text-text-secondary hover:bg-surface-2 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleDelete}
-            disabled={deleting}
-            className="flex items-center gap-2 rounded-md bg-danger px-4 py-2 text-xs font-medium text-white hover:bg-danger/90 transition-colors disabled:opacity-50"
-          >
-            {deleting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
-            {deleting ? 'Deleting...' : 'Delete'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function GroupRow({
-  group,
-  expanded,
-  clusterId,
-  isProd,
-  onToggle
-}: {
-  group: ConsumerGroup
-  expanded: boolean
-  clusterId: string
-  isProd: boolean
-  onToggle: () => void
-}) {
-  const [showResetDropdown, setShowResetDropdown] = useState(false)
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
-
-  const canDelete = group.state === 'Empty' || group.state === 'Dead'
-
-  return (
-    <>
-      <tr
-        className="cursor-pointer border-b border-border/50 transition-colors hover:bg-surface-2/60"
-        onClick={onToggle}
-      >
-        <td className="pl-3">
-          {expanded ? (
-            <ChevronDown className="h-4 w-4 text-text-muted" />
-          ) : (
-            <ChevronRight className="h-4 w-4 text-text-muted" />
-          )}
-        </td>
-        <td className="px-4 py-2.5 font-mono text-text-primary">{group.groupId}</td>
-        <td className="px-4 py-2.5">
-          <span
-            className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${STATE_STYLES[group.state]}`}
-          >
-            {group.state}
-          </span>
-        </td>
-        <td className="px-4 py-2.5 text-right tabular-nums text-text-secondary">{group.members}</td>
-        <td className="px-4 py-2.5 text-right tabular-nums text-text-secondary">
-          {group.topics.length}
-        </td>
-        <td className="px-4 py-2.5 text-right tabular-nums text-text-secondary">
-          {(group.totalLag ?? 0).toLocaleString()}
-        </td>
-        <td className="px-4 py-2.5 text-right">
-          <div className="flex items-center justify-end gap-2">
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                setShowResetDropdown(true)
-              }}
-              className="inline-flex items-center gap-1.5 rounded-md bg-surface-3 px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-surface-4 hover:text-text-primary"
-            >
-              <RotateCcw className="h-3 w-3" />
-              Reset
-            </button>
-            {canDelete && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setShowDeleteConfirm(true)
-                }}
-                className="inline-flex items-center gap-1.5 rounded-md bg-danger/10 px-2.5 py-1 text-xs text-danger transition-colors hover:bg-danger/20"
+          {consumerGroups
+            .filter((g) => g.groupId.toLowerCase().includes(search.toLowerCase()))
+            .map((g) => (
+              <tr
+                key={g.groupId}
+                className={`border-t border-border ${g.groupId === selected ? 'bg-accent/10' : ''}`}
               >
-                <Trash2 className="h-3 w-3" />
-                Delete
-              </button>
-            )}
-          </div>
-        </td>
-      </tr>
-      {expanded && (
-        <tr>
-          <td colSpan={7} className="bg-surface-1 p-0">
-            <ExpandedOffsets groupId={group.groupId} clusterId={clusterId} />
-          </td>
-        </tr>
-      )}
-
-      {showResetDropdown && (
-        <ResetOffsetsDropdown
-          groupId={group.groupId}
-          topics={group.topics}
-          clusterId={clusterId}
-          isProd={isProd}
-          onClose={() => setShowResetDropdown(false)}
-        />
-      )}
-
-      {showDeleteConfirm && (
-        <DeleteConfirmDialog
-          groupId={group.groupId}
-          clusterId={clusterId}
-          onClose={() => setShowDeleteConfirm(false)}
-        />
-      )}
-    </>
-  )
-}
-
-export default function ConsumerGroups() {
-  const [search, setSearch] = useState('')
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-
-  const { activeClusterId, clusters, connections } = useClusterStore()
-  const { consumerGroups, consumerGroupsLoading, fetchConsumerGroups } = useDataStore()
-
-  const isProd = useMemo(() => {
-    if (!activeClusterId) return false
-    const cluster = clusters.find((c) => c.id === activeClusterId)
-    return cluster?.environmentLabel === 'prod'
-  }, [activeClusterId, clusters])
-
-  const doRefresh = useCallback(() => {
-    if (!activeClusterId) return
-    fetchConsumerGroups(activeClusterId)
-  }, [activeClusterId, fetchConsumerGroups])
-
-  useEffect(() => {
-    doRefresh()
-  }, [doRefresh])
-
-  const filtered = useMemo(
-    () =>
-      consumerGroups.filter((g) => g.groupId.toLowerCase().includes(search.toLowerCase())),
-    [consumerGroups, search]
-  )
-
-  return (
-    <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border px-6 py-4">
-        <div className="flex items-center gap-3">
-          <Users className="h-5 w-5 text-accent" />
-          <h1 className="text-lg font-semibold text-text-primary">Consumer Groups</h1>
-          <span className="rounded-full bg-surface-3 px-2 py-0.5 text-xs text-text-muted">
-            {consumerGroups.length}
-          </span>
-        </div>
-        <button
-          onClick={doRefresh}
-          className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
-        >
-          <RefreshCw className={`h-4 w-4 ${consumerGroupsLoading ? 'animate-spin' : ''}`} />
-        </button>
-      </div>
-
-      {/* Search */}
-      <div className="border-b border-border px-6 py-3">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
-          <input
-            type="text"
-            placeholder="Filter by group ID..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded-lg border border-border bg-surface-1 py-2 pl-9 pr-4 text-sm text-text-primary placeholder:text-text-muted transition-colors focus:border-accent focus:outline-none"
-          />
-        </div>
-      </div>
-
-      {/* Table */}
-      <div className="flex-1 overflow-auto">
-        <table className="w-full text-sm">
-          <thead className="sticky top-0 z-10 bg-surface-1">
-            <tr className="border-b border-border text-text-muted">
-              <th className="w-8" />
-              <th className="px-4 py-2.5 text-left font-medium">Group ID</th>
-              <th className="px-4 py-2.5 text-left font-medium">State</th>
-              <th className="px-4 py-2.5 text-right font-medium">Members</th>
-              <th className="px-4 py-2.5 text-right font-medium">Topics</th>
-              <th className="px-4 py-2.5 text-right font-medium">Total Lag</th>
-              <th className="px-4 py-2.5 text-right font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {consumerGroupsLoading && consumerGroups.length === 0
-              ? [...Array(6)].map((_, i) => <SkeletonRow key={i} />)
-              : filtered.map((g) => {
-                  const expanded = expandedId === g.groupId
-                  return (
-                    <GroupRow
-                      key={g.groupId}
-                      group={g}
-                      expanded={expanded}
-                      clusterId={activeClusterId ?? ''}
-                      isProd={isProd}
-                      onToggle={() => setExpandedId(expanded ? null : g.groupId)}
-                    />
-                  )
-                })}
-            {!consumerGroupsLoading && filtered.length === 0 && (
-              <tr>
-                <td colSpan={7} className="py-12 text-center text-text-muted">
-                  No consumer groups match your filter.
+                <td className="p-2">
+                  <button onClick={() => setSelected(g.groupId)} className="font-mono text-accent">
+                    {g.groupId}
+                  </button>
+                </td>
+                <td>{g.state}</td>
+                <td>{g.protocolType}</td>
+                <td>{g.members}</td>
+                <td>{g.topics.join(', ') || '—'}</td>
+                <td
+                  title={g.lagError}
+                  className={
+                    g.lagError
+                      ? 'text-text-muted'
+                      : g.totalLag > 10000
+                        ? 'text-danger'
+                        : g.totalLag > 100
+                          ? 'text-warning'
+                          : 'text-success'
+                  }
+                >
+                  {g.lagError ? 'Unavailable' : g.totalLag.toLocaleString()}
                 </td>
               </tr>
+            ))}
+        </tbody>
+      </table>
+      {group && (
+        <section className="space-y-4 rounded border border-border p-4">
+          <h2 className="font-semibold">{selected}</h2>
+          {group.lagError && (
+            <p role="status" className="text-xs text-warning">
+              {group.lagError}
+            </p>
+          )}
+          <LagChart samples={lagHistory[selected] ?? []} />
+          <div className="flex gap-2">
+            <Button
+              onClick={() => download(`${selected}-offsets.json`, JSON.stringify(offsets, null, 2))}
+            >
+              Export JSON
+            </Button>
+            <Button
+              onClick={() =>
+                download(
+                  `${selected}-offsets.csv`,
+                  csv(
+                    ['Topic', 'Partition', 'Current offset', 'End offset', 'Lag'],
+                    offsets.map((o) => [
+                      o.topic,
+                      o.partition,
+                      o.currentOffset,
+                      o.logEndOffset,
+                      o.lag
+                    ])
+                  ),
+                  'text/csv'
+                )
+              }
+            >
+              Export CSV
+            </Button>
+          </div>
+          <table className="w-full text-xs">
+            <thead>
+              <tr>
+                {['Topic', 'Partition', 'Current offset', 'End offset', 'Lag'].map((h) => (
+                  <th key={h} className="text-left p-2">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {offsets.map((o) => (
+                <tr key={`${o.topic}:${o.partition}`} className="border-t border-border">
+                  <td className="p-2">{o.topic}</td>
+                  <td>{o.partition}</td>
+                  <td>{o.currentOffset < 0 ? 'Uncommitted' : o.currentOffset}</td>
+                  <td>{o.logEndOffset}</td>
+                  <td>
+                    <div className="flex gap-2 items-center">
+                      <span>{o.lag}</span>
+                      <div className="h-1.5 w-24 bg-surface-3 rounded">
+                        <div
+                          className="h-full rounded bg-warning"
+                          style={{
+                            width: `${(o.lag / Math.max(1, ...offsets.map((v) => v.lag))) * 100}%`
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <h3 className="text-sm font-semibold">Members</h3>
+          {detail?.members.length ? (
+            detail.members.map((m) => (
+              <div key={m.memberId} className="text-xs font-mono bg-surface-2 p-2 rounded">
+                {m.clientId} · {m.host} · {m.memberId}
+                <p>
+                  {m.assignments.map((a) => `${a.topic}: [${a.partitions.join(', ')}]`).join(' · ')}
+                </p>
+              </div>
+            ))
+          ) : (
+            <p className="text-xs text-text-muted">
+              No active members. Topics are derived from committed offsets.
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <Select
+              aria-label="Reset topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+            >
+              {group.topics.map((t) => (
+                <option key={t}>{t}</option>
+              ))}
+            </Select>
+            <Select
+              aria-label="Reset mode"
+              value={mode}
+              onChange={(e) => {
+                setMode(e.target.value as OffsetSpec['type'])
+                setValue('')
+              }}
+            >
+              {['earliest', 'latest', 'to-offset', 'to-timestamp'].map((m) => (
+                <option key={m}>{m}</option>
+              ))}
+            </Select>
+            {mode.startsWith('to-') && (
+              <Input
+                aria-label="Reset value"
+                type={mode === 'to-timestamp' ? 'datetime-local' : 'text'}
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+              />
             )}
-          </tbody>
-        </table>
-      </div>
+            <Button disabled={busy || group.members > 0 || !topic} onClick={reset}>
+              Reset offsets
+            </Button>
+            <Button disabled={busy || group.members > 0} onClick={remove} className="text-danger">
+              Delete group
+            </Button>
+          </div>
+          <p className="text-xs text-text-muted">
+            Stop active members before reset or deletion. Commit timestamps are not provided by the
+            Kafka protocol.
+          </p>
+        </section>
+      )}
+      {dialog}
     </div>
   )
 }
