@@ -15,6 +15,7 @@ interface UIStore {
   commandPaletteOpen: boolean
   selectedTopicName: string | null
   selectedConsumerGroupId: string | null
+  selectedBrokerId: number | null
   selectedSchemaSubject: string | null
 
   globalError: string | null
@@ -27,6 +28,7 @@ interface UIStore {
   toggleCommandPalette: () => void
   setSelectedTopic: (name: string | null) => void
   setSelectedConsumerGroup: (id: string | null) => void
+  setSelectedBroker: (id: number | null) => void
   setSelectedSchemaSubject: (subject: string | null) => void
   navigateToTopic: (name: string) => void
   setGlobalError: (error: string | null) => void
@@ -45,6 +47,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   selectedTopicName: null,
   selectedConsumerGroupId: null,
   selectedSchemaSubject: null,
+  selectedBrokerId: null,
 
   globalError: null,
   globalLoading: false,
@@ -56,6 +59,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   toggleCommandPalette: () => set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
   setSelectedTopic: (name) => set({ selectedTopicName: name }),
   setSelectedConsumerGroup: (id) => set({ selectedConsumerGroupId: id }),
+  setSelectedBroker: (id) => set({ selectedBrokerId: id }),
   setSelectedSchemaSubject: (subject) => set({ selectedSchemaSubject: subject }),
 
   navigateToTopic: (name) =>
@@ -68,7 +72,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
     const id = `notif-${Date.now()}-${++notifCounter}`
     const notification: Notification = { id, type, message, timestamp: Date.now() }
 
-    set((s) => ({ notifications: [...s.notifications, notification] }))
+    set((s) => ({ notifications: [...s.notifications, notification].slice(-50) }))
 
     if (type === 'success' || type === 'info') {
       setTimeout(() => {

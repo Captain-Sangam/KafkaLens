@@ -32,7 +32,7 @@ Data flows: **Renderer → IPC invoke → Main process service → IPC response 
 | `src/main/prompts/index.ts` | AI system prompts — all prompt templates in one editable file |
 | `src/main/ipc-handlers.ts` | All 43 IPC handler registrations |
 | `src/renderer/src/stores/` | Zustand stores — clusterStore, dataStore, uiStore |
-| `src/renderer/src/pages/` | 8 feature pages |
+| `src/renderer/src/pages/` | 9 feature pages |
 | `src/renderer/src/lib/ai-guard.ts` | AI configuration check helper |
 | `src/renderer/src/types/index.ts` | Shared TypeScript type definitions |
 
@@ -109,7 +109,7 @@ When adding a new AI feature:
 ```bash
 npm install --ignore-scripts
 node node_modules/electron/install.js
-npx electron-rebuild -f -w better-sqlite3
+npm run check
 unset ELECTRON_RUN_AS_NODE && npm run dev
 ```
 
@@ -120,7 +120,7 @@ Build artifacts are written to `apps/desktop/out/`. The renderer dev server runs
 | Package | Purpose | Where |
 |---------|---------|-------|
 | `kafkajs` | Kafka client (admin, consumer, producer) | Main process |
-| `better-sqlite3` | Local SQLite database (native module, needs electron-rebuild) | Main process |
+| `better-sqlite3` | Local SQLite database (native module, includes native prebuilds) | Main process |
 | `electron-vite` | Vite-based build tooling for Electron (main + preload + renderer) | Build |
 | `zustand` | Lightweight state management | Renderer |
 | `lucide-react` | Icon library | Renderer |
@@ -134,18 +134,8 @@ Build artifacts are written to `apps/desktop/out/`. The renderer dev server runs
 - Destructive operations should always be tested against prod-labeled clusters to verify the double-confirmation flow.
 - AI features require a valid API key in Settings; test the "not configured" state as well.
 
-## Known Gaps (PRD Alignment)
+## PRD alignment
 
-These features are specified in the PRD but not yet implemented:
+The previously listed feature gaps are implemented: partition inspection, lag trends, semantic topic search, optional anomaly monitoring, advanced message filters, timestamp seeking, message templates, schema field search, group exports, Keychain credentials, and broker history.
 
-- **Partition Inspector page** (PRD §4.7) — backend `getPartitions()` exists, needs dedicated page
-- **Consumer lag trend chart** (PRD §4.6) — per-group lag over time with in-session sampling
-- **Natural language topic search** (PRD §5.2.6) — AI-powered semantic search
-- **Consumer lag anomaly detection** (PRD §5.2.5) — background AI monitoring
-- **Advanced message filter UI** — timestamp range, key regex, value JSONPath (backend supports)
-- **Seek to timestamp UI** — backend supports, needs offset mode button
-- **Produce from template** (PRD §4.3)
-- **Schema search across field names** (PRD §4.5)
-- **Export consumer group offsets** (PRD §4.6)
-- **macOS Keychain credential storage** (PRD §7.2) — currently SQLite
-- **Broker config change history** (PRD §4.8)
+See README.md, docs/RELEASE.md, and docs/VALIDATION.md for validation, release instructions, and the remaining memory/release acceptance gates. Do not replace unavailable Kafka metadata with fabricated values: leader epochs, broker log directories, and offset commit timestamps are not exposed by KafkaJS. Signed distribution and live-provider testing require maintainer credentials.

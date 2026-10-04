@@ -1,295 +1,140 @@
 # KafkaLens
 
-A free, open-source desktop application for managing, inspecting, and debugging Apache Kafka clusters. Built for developers, platform engineers, and SREs who need fast, pragmatic access to Kafka internals.
+A free, open-source desktop workspace for inspecting, debugging, and managing Apache Kafka on macOS.
 
-## Features
+Browse messages, investigate consumer lag, compare schemas, and replay failed records from one window. KafkaLens brings topic, partition, consumer group, Schema Registry, and broker views together, with an optional AI assistant for explanations and troubleshooting.
 
-- **Multi-cluster management** — Connect to and switch between multiple Kafka clusters with color-coded environment labels (Local/Dev/Staging/Prod)
-- **Topic browser** — Search, filter, and inspect topics with sortable columns, favorites, and health indicators
-- **Message inspector** — Browse messages with offset control, partition filtering, JSON syntax highlighting, and expandable message details
-- **Message producer** — Compose and send messages with key, value, headers, and partition targeting
-- **Consumer group monitoring** — View consumer group state, member assignments, and per-partition lag with visual bars
-- **Consumer group operations** — Reset offsets (earliest/latest/timestamp/specific) with production safety confirmations
-- **Schema Registry browser** — Explore schemas, view version history, register new versions, and compare schema diffs side-by-side
-- **Dead Letter Queue dashboard** — Auto-detect DLQ topics, inspect failure details, replay messages to original or custom topics, and bulk replay
-- **Broker configuration** — View broker configs with inline descriptions, cross-broker diff comparisons, and export
-- **AI assistant** — Optional AI-powered message explanation, DLQ root cause analysis, schema diff explanation, topic config advice, and cluster health summaries (bring your own API key — supports OpenAI, Anthropic, and Google Gemini)
-- **Keyboard-first** — Command palette (⌘K), page shortcuts (⌘1-7), and full keyboard navigation
-- **Dark mode first** — Dense, readable interface designed for infrastructure tooling
-## Tech Stack
+Connect local, development, staging, and production clusters with distinct environment labels. A dark interface, command palette, and page shortcuts keep everyday Kafka work close at hand.
 
-- **Shell:** Electron 33 (macOS-optimized, `hiddenInset` title bar)
-- **Frontend:** React 19 + TypeScript + Tailwind CSS 4 + Zustand
-- **Backend:** KafkaJS + better-sqlite3 (SQLite with WAL mode for local persistence)
-- **AI:** Raw HTTP to OpenAI, Anthropic, and Google Gemini APIs (no SDK dependencies)
-- **Build:** electron-vite (Vite-powered, HMR in dev)
-- **Package:** electron-builder for `.dmg` and `.zip` distribution
+> [!NOTE]
+> Version 1.0.0 is in release preparation. Local source builds are available; signed distribution and remaining acceptance gates are tracked in [Validation results](docs/VALIDATION.md).
 
----
+## Highlights
 
-## Getting Started
+- **Multiple clusters** — Saved connection profiles, environment colors, TLS, SASL/PLAIN, and SASL/SCRAM authentication; profile imports and exports exclude credentials.
+- **Topics and partitions** — Search, favorites, topic creation and configuration, plus partition leaders, replicas, ISR, offset bounds, and exports.
+- **Message inspection** — JSON, Avro, Schema Registry Protobuf, string, and binary decoding; bounded live tail, timestamp seeking, forward/backward paging, and saved timestamp/key/JSONPath filters.
+- **Message production** — Compose JSON, string, binary, and Avro records with keys, headers, partition targeting, schema validation, and reusable templates.
+- **Consumer groups** — Member assignments, per-partition lag, session trends, offset resets, and JSON/CSV offset exports.
+- **Schema Registry** — Subject and field search, schema ID lookup, version history, compatibility checks, registration, and side-by-side diffs.
+- **Dead letter queues** — Discover DLQ topics, inspect failure metadata, persist reviews, and replay selected records with original bytes, headers, and tombstones preserved.
+- **Broker configuration** — Descriptions, defaults, cross-broker comparisons, durable change history, and exports.
+- **Optional AI** — Message explanations, DLQ analysis, schema and configuration advice, health summaries, semantic topic search, and opt-in lag anomaly monitoring.
+- **Keyboard access** — Command palette, page navigation, topic search, and refresh shortcuts.
 
-### Prerequisites
+## Requirements
 
-- **Node.js** >= 18 (check with `node -v`)
-- **npm** >= 9 (check with `npm -v`)
-- **macOS** (the Electron shell is macOS-optimized; Linux/Windows support planned for v1.1)
+- macOS 13 or newer
+- Node.js 24 and npm 11 or newer for source builds
+- A reachable Kafka cluster; Schema Registry is optional
+- Docker with Compose for the disposable local cluster and integration checks
+- Your own OpenAI, Anthropic, or Google Gemini API key if you enable AI
 
-### Step 1: Clone the repository
+Docker and an AI key are optional for normal use with an existing cluster.
+
+## Build from source
+
+Clone, install the locked dependencies, validate, and install the app:
 
 ```bash
-git clone https://github.com/your-org/kafkalens.git
+git clone https://github.com/Captain-Sangam/KafkaLens.git kafkalens
 cd kafkalens
+make install
+make check
+make export
 ```
 
-### Step 2: Install dependencies
-
-The `--ignore-scripts` flag skips the Electron binary download during the initial `npm install`, which avoids issues in sandboxed environments. The Electron binary is installed separately in the next step.
+Launch **KafkaLens** from Spotlight (`⌘Space`). `make export` builds a local unsigned app and installs it to `/Applications` when writable, otherwise `~/Applications`. Quit an existing KafkaLens instance before replacing it. To choose another destination:
 
 ```bash
-npm install --ignore-scripts
+make export APP_DEST="$HOME/Applications"
 ```
 
-### Step 3: Install the Electron binary
+For development with hot reload, use `make dev`. The Makefile clears `ELECTRON_RUN_AS_NODE` when launching Electron, including from IDE terminals. Build output goes to `apps/desktop/out/`; packaged output goes to `apps/desktop/release/`.
+
+Signed packaging, notarization, and release publication are covered in the [Release guide](docs/RELEASE.md).
+
+## Connect a cluster
+
+1. Open **Settings** (`⌘,` or `⌘7`) and choose **Add Cluster**.
+2. Enter a name, bootstrap servers, environment label, and authentication details. Add a Schema Registry URL if needed.
+3. Choose **Test Connection**, save the profile, then select it in the sidebar to connect.
+
+For a local sandbox, start the checked-in Kafka and Schema Registry fixtures:
 
 ```bash
-node node_modules/electron/install.js
+make fixtures-up
 ```
 
-### Step 4: Rebuild native modules for Electron
+Use bootstrap server `localhost:19092`, no authentication, and Schema Registry URL `http://localhost:18081`. Create a topic and produce a record to start exploring. When finished, `make fixtures-down` removes the disposable fixtures and their volumes.
 
-The `better-sqlite3` native module must be compiled against Electron's Node.js version (not your system Node). Run:
+If a connection fails, check broker reachability, advertised listener addresses, VPN access, and the profile's TLS/SASL settings.
+
+## AI assistant and privacy
+
+AI is disabled by default. In **Settings → AI Configuration**, enable AI, select OpenAI, Anthropic, or Google Gemini, choose a model, and add your API key. Explicitly consent to sharing selected payloads and configuration with that provider, then save the settings. Individual features can be disabled independently; background lag anomaly analysis requires an additional opt-in.
+
+Configured field patterns redact matching content before requests leave the app. Review these settings against your data before using AI. Kafka browsing and management work without an AI key.
+
+Kafka, Schema Registry, and AI credentials are stored in the macOS Keychain. SQLite stores connection metadata, preferences, favorites, filter presets, templates, DLQ reviews, and broker snapshots. Existing plaintext credentials are migrated before removal, with the original data recoverable if Keychain access fails.
+
+AI history is also disabled by default. If enabled, it keeps the last 50 generated responses and provider/feature metadata locally; request inputs and API keys are excluded. Generated responses may still contain information derived from the supplied context.
+
+## Operational safeguards
+
+Topic deletion, offset resets, and schema version deletion require confirmation. Production-labeled clusters also require the resource name to be typed. DLQ replay shows a confirmation before producing records, with an additional typed confirmation for production.
+
+Unavailable Kafka metadata is shown as unavailable. KafkaJS does not expose broker log directories, leader epochs, broker Kafka versions, or offset commit timestamps through the current implementation. Offset spans are not exact retained record counts for compacted or transactional topics.
+
+## Development commands
+
+Run `make` or `make help` for the full target list. The [Makefile](Makefile) wraps the npm workspace scripts.
+
+| Command        | Purpose                                         |
+| -------------- | ----------------------------------------------- |
+| `make dev`     | Run Electron and the renderer with hot reload   |
+| `make start`   | Build and launch the production preview         |
+| `make check`   | Lint, typecheck, run unit tests, and build      |
+| `make test`    | Run unit tests                                  |
+| `make package` | Build unsigned local macOS DMG and ZIP previews |
+| `make clean`   | Remove generated builds, packages, and coverage |
+
+Run real Kafka, Schema Registry, desktop, and performance checks against the disposable fixtures:
 
 ```bash
-npx electron-rebuild -f -w better-sqlite3
+make fixtures-up
+make test-integration
+make test-desktop
+make test-performance
+make fixtures-down
 ```
 
-If that doesn't work (check by running the app — you'll see a `NODE_MODULE_VERSION` mismatch error), rebuild manually:
+The app uses Electron, React, TypeScript, Tailwind CSS, Zustand, KafkaJS, and SQLite. Kafka connections, persistence, credentials, and AI calls run in the main process; the isolated renderer communicates through a typed preload bridge. See [Agent and architecture guidelines](AGENTS.md) for implementation conventions.
 
-```bash
-cd node_modules/better-sqlite3
-npx node-gyp rebuild \
-  --runtime=electron \
-  --target=$(node -e "console.log(require('electron/package.json').version)") \
-  --arch=$(uname -m | sed 's/x86_64/x64/' | sed 's/aarch64/arm64/') \
-  --dist-url=https://electronjs.org/headers
-cd ../..
-```
+## Keyboard shortcuts
 
-### Step 5: Run in development mode
+| Shortcut                  | Action                                     |
+| ------------------------- | ------------------------------------------ |
+| `⌘K`                      | Command palette                            |
+| `⌘R`                      | Refresh the current page                   |
+| `⌘T`                      | Open topics and focus search               |
+| `⌘,`                      | Settings                                   |
+| `⌘1` / `⌘2` / `⌘3`        | Dashboard / Topics / Consumer Groups       |
+| `⌘4` / `⌘5` / `⌘6` / `⌘7` | Schema Registry / DLQ / Brokers / Settings |
 
-```bash
-npm run dev
-```
+## Documentation
 
-This starts:
-1. The Vite dev server for the renderer process (React UI with HMR)
-2. Builds the main process and preload scripts
-3. Launches the Electron window
+- [Product requirements and roadmap](PRD.md)
+- [Agent and architecture guidelines](AGENTS.md)
+- [Validation results and remaining acceptance gates](docs/VALIDATION.md)
+- [Release preparation and signed distribution](docs/RELEASE.md)
 
-The app opens automatically. Changes to the React code hot-reload instantly. Changes to main process code trigger an automatic rebuild and app restart.
+Local validation covers unit checks, a plaintext Kafka/Registry fixture, and an unsigned Apple Silicon desktop build. The 150 MB idle-memory target remains unmet. Signed distribution, live AI provider checks, secured multi-broker coverage, and a complete accessibility audit remain open; the validation document records the evidence and limits.
 
-> **IDE note:** Some editors (like Cursor and VS Code) set `ELECTRON_RUN_AS_NODE=1` in their integrated terminals, which prevents Electron from starting properly. If you see `Cannot read properties of undefined (reading 'isPackaged')`, unset it first:
->
-> ```bash
-> unset ELECTRON_RUN_AS_NODE && npm run dev
-> ```
+## Contributing
 
----
-
-## Connecting to Kafka
-
-### Add a cluster
-
-1. Open **Settings** (⌘7 or click the gear icon in the sidebar)
-2. Click **Add Cluster**
-3. Fill in the connection details:
-   - **Display Name** — a friendly label (e.g., "Local Dev")
-   - **Bootstrap Servers** — comma-separated broker addresses (e.g., `localhost:9092`)
-   - **Environment** — Local, Dev, Staging, or Prod (affects UI color coding and safety confirmations)
-   - **Authentication** — None, SASL/PLAIN, SASL/SCRAM-256, SASL/SCRAM-512, or SSL/TLS
-   - **Schema Registry URL** — optional, for Avro/Protobuf decoding
-4. Click **Test Connection** to verify
-5. Click **Save**
-
-The cluster appears in the sidebar dropdown. Select it to connect and start browsing.
-
-### Quick start with a local cluster
-
-If you have Docker installed, spin up a local Kafka cluster:
-
-```bash
-docker run -d --name kafka \
-  -p 9092:9092 \
-  -e KAFKA_CFG_NODE_ID=0 \
-  -e KAFKA_CFG_PROCESS_ROLES=controller,broker \
-  -e KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
-  -e KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
-  -e KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@localhost:9093 \
-  -e KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER \
-  -e KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
-  bitnami/kafka:latest
-```
-
-Then add a cluster in KafkaLens with bootstrap servers `localhost:9092`, no auth.
-
----
-
-## Configuring AI
-
-KafkaLens supports three AI providers. You bring your own API key.
-
-1. Open **Settings** (⌘7)
-2. Scroll to the **AI Configuration** section
-3. Toggle AI **on**
-4. Select a provider:
-   - **OpenAI** — models: `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`
-   - **Anthropic** — models: `claude-sonnet-4-20250514`, `claude-3.5-sonnet`, `claude-3-haiku`
-   - **Google** — models: `gemini-2.0-flash`, `gemini-1.5-pro`, `gemini-1.5-flash`
-5. Paste your API key
-6. (Optional) Add field redaction patterns — comma-separated field names like `password,token,ssn,secret` to strip from payloads before they're sent to the AI
-7. Click **Save**
-
-AI features then appear throughout the app: "Explain with AI" on messages, "Root Cause Analysis" on DLQ entries, "AI Config Review" on broker settings, and "Get AI Health Summary" on the dashboard.
-
----
-
-## Building for Production
-
-### Compile the app
-
-```bash
-npm run build
-```
-
-This outputs optimized bundles to `apps/desktop/out/`.
-
-### Package as a macOS `.dmg`
-
-```bash
-cd apps/desktop
-npm run build:mac
-```
-
-The `.dmg` and `.zip` artifacts are written to `apps/desktop/release/`.
-
-### Package as an unpacked directory (for testing)
-
-```bash
-cd apps/desktop
-npm run build:unpack
-```
-
----
-
-## Project Structure
-
-```
-kafkalens/
-├── apps/
-│   └── desktop/                       # Electron + React application
-│       ├── src/
-│       │   ├── main/                  # Electron main process
-│       │   │   ├── index.ts           # App lifecycle, window creation
-│       │   │   ├── ipc-handlers.ts    # 43 IPC handlers across 9 domains
-│       │   │   ├── prompts/           # AI system prompts (editable)
-│       │   │   │   └── index.ts       # All AI prompt templates
-│       │   │   └── services/
-│       │   │       ├── kafka-service.ts    # KafkaJS wrapper (connections, topics, messages, groups, brokers)
-│       │   │       ├── schema-service.ts   # Confluent Schema Registry REST client
-│       │   │       ├── ai-service.ts       # Multi-provider AI (OpenAI, Anthropic, Google Gemini)
-│       │   │       └── store-service.ts    # SQLite persistence (clusters, favorites, settings)
-│       │   ├── preload/               # Context bridge — exposes typed IPC API to renderer
-│       │   └── renderer/              # React UI
-│       │       └── src/
-│       │           ├── components/    # Layout (sidebar, status bar, command palette), shared UI
-│       │           ├── pages/         # 8 feature pages (Dashboard, Topics, Messages, etc.)
-│       │           ├── stores/        # Zustand stores (cluster, data, UI state)
-│       │           ├── lib/           # AI guard utility
-│       │           └── types/         # Shared TypeScript type definitions
-│       ├── electron.vite.config.ts    # Vite config for main, preload, and renderer
-│       └── package.json
-├── packages/
-│   ├── kafka-client/                  # KafkaJS abstraction interfaces
-│   ├── schema-client/                 # Schema Registry client interfaces
-│   ├── ai-layer/                      # AI provider interfaces
-│   └── ui-components/                 # Shared component library (planned)
-├── .github/workflows/                 # CI/CD (planned)
-├── package.json                       # Root workspace config (npm workspaces)
-├── PRD.md                             # Product requirements document
-└── README.md
-```
-
----
-
-## Keyboard Shortcuts
-
-| Shortcut | Action             |
-| -------- | ------------------ |
-| ⌘K       | Command Palette    |
-| ⌘1       | Dashboard          |
-| ⌘2       | Topics             |
-| ⌘3       | Consumer Groups    |
-| ⌘4       | Schema Registry    |
-| ⌘5       | DLQ Dashboard      |
-| ⌘6       | Brokers            |
-| ⌘7       | Settings           |
-
----
-
-## Current Status (v0.1)
-
-### Implemented
-
-All core features from the PRD are functional: cluster management, topic CRUD, message browsing with live tail, consumer group monitoring with offset reset, Schema Registry with diff viewer, DLQ dashboard with replay, broker config with cross-broker comparison, and AI-powered insights across all major views.
-
-### Known Gaps (Planned for Next Iteration)
-
-- **Partition Inspector page** — dedicated page for partition-level topology and health (PRD §4.7)
-- **Consumer lag trend chart** — per-group lag sampled over time with in-session charting (PRD §4.6)
-- **Natural language topic search** — AI-powered semantic search over topic list (PRD §5.2.6)
-- **Consumer lag anomaly detection** — background AI monitoring with notifications (PRD §5.2.5)
-- **Advanced message filtering UI** — timestamp range, key regex, value JSONPath filters (backend supports, UI pending)
-- **Seek to timestamp** — offset mode for seeking by timestamp (backend supports, UI pending)
-- **Produce from template** — save and reuse message templates (PRD §4.3)
-- **Schema search** — search across subjects and field names (PRD §4.5)
-- **Export consumer group offsets** — JSON/CSV export (PRD §4.6)
-- **macOS Keychain integration** — credentials currently stored in SQLite; Keychain migration pending (PRD §7.2)
-- **Config change history** — detect broker config changes since last inspection (PRD §4.8)
-
----
-
-## Troubleshooting
-
-### `ELECTRON_RUN_AS_NODE` error
-
-If you see `TypeError: Cannot read properties of undefined (reading 'isPackaged')` when running `npm run dev`, your terminal has `ELECTRON_RUN_AS_NODE=1` set (common in IDE integrated terminals). Fix:
-
-```bash
-unset ELECTRON_RUN_AS_NODE && npm run dev
-```
-
-### `NODE_MODULE_VERSION` mismatch
-
-If you see an error about `better_sqlite3.node` being compiled against a different Node.js version, rebuild it:
-
-```bash
-npx electron-rebuild -f -w better-sqlite3
-```
-
-### App starts but shows no data
-
-No Kafka cluster is connected. Add and connect a cluster in Settings (⌘7) to see live data.
-
-### Connection test fails
-
-- Verify your Kafka brokers are reachable from your machine (`nc -zv localhost 9092`)
-- Check that the authentication method and credentials are correct
-- For SSL connections, ensure the certificate path is valid
-- Firewall or VPN may block access to remote clusters
-
----
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, validation, safety conventions, and how to report security issues privately. For substantial features, open an issue describing the proposed workflow before implementation.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) for details.
+KafkaLens is available under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.

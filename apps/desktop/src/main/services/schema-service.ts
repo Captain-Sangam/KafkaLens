@@ -1,3 +1,4 @@
+import type { SchemaSubject, SchemaDefinition } from '../../renderer/src/types'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -22,11 +23,20 @@ interface RegistryConfig {
 
 class SchemaRegistryService {
   private registries = new Map<string, RegistryConfig>()
+  private cache = new Map<string, SchemaDefinition>()
+  clear(clusterId: string): void {
+    this.registries.delete(clusterId)
+    for (const key of this.cache.keys()) if (key.startsWith(clusterId + ':')) this.cache.delete(key)
+  }
 
   configure(
     clusterId: string,
     config: { url: string; username?: string; password?: string }
   ): void {
+    this.clear(clusterId)
+    const url = new URL(config.url)
+    if (!['http:', 'https:'].includes(url.protocol))
+      throw new Error('Use an HTTP or HTTPS Schema Registry URL')
     this.registries.set(clusterId, {
       url: config.url.replace(/\/+$/, ''),
       username: config.username,
@@ -38,8 +48,31 @@ class SchemaRegistryService {
     return this.registries.has(clusterId)
   }
 
-  async listSubjects(clusterId: string): Promise<string[]> {
-    return this.request<string[]>(clusterId, 'GET', '/subjects')
+  async listSubjects(clusterId: string): Promise<SchemaSubject[]> {
+    const names = await this.request<string[]>(clusterId, 'GET', '/subjects')
+    const subjects: SchemaSubject[] = []
+    for (let i = 0; i < names.length; i += 8) {
+      subjects.push(
+        ...(await Promise.all(
+          names.slice(i, i + 8).map(async (subject) => {
+            const [versions, schema, compatibility] = await Promise.all([
+              this.getVersions(clusterId, subject),
+              this.getSchema(clusterId, subject, 'latest'),
+              this.getCompatibility(clusterId, subject)
+            ])
+            return {
+              subject,
+              versions,
+              latestVersion: schema.version,
+              compatibility: compatibility as SchemaSubject['compatibility'],
+              schemaType: schema.schemaType as SchemaSubject['schemaType'],
+              schema: schema.schema
+            }
+          })
+        ))
+      )
+    }
+    return subjects
   }
 
   async getVersions(clusterId: string, subject: string): Promise<number[]> {
@@ -53,44 +86,36 @@ class SchemaRegistryService {
   async getSchema(
     clusterId: string,
     subject: string,
-    version: number
+    version: number | string
   ): Promise<SchemaVersionInfo> {
     const raw = await this.request<{
       subject: string
-      version: number
+      version: number | string
       id: number
       schema: string
       schemaType?: string
-    }>(
-      clusterId,
-      'GET',
-      `/subjects/${encodeURIComponent(subject)}/versions/${version}`
-    )
+    }>(clusterId, 'GET', `/subjects/${encodeURIComponent(subject)}/versions/${version}`)
 
     return {
       subject: raw.subject,
-      version: raw.version,
+      version: Number(raw.version),
       id: raw.id,
       schema: raw.schema,
       schemaType: raw.schemaType ?? 'AVRO'
     }
   }
 
-  async getSchemaById(
-    clusterId: string,
-    id: number
-  ): Promise<{ schema: string }> {
-    return this.request<{ schema: string }>(
-      clusterId,
-      'GET',
-      `/schemas/ids/${id}`
-    )
+  async getSchemaById(clusterId: string, id: number): Promise<SchemaDefinition> {
+    const key = `${clusterId}:${id}`
+    const cached = this.cache.get(key)
+    if (cached) return cached
+    const result = await this.request<SchemaDefinition>(clusterId, 'GET', `/schemas/ids/${id}`)
+    if (this.cache.size > 1000) this.cache.delete(this.cache.keys().next().value!)
+    this.cache.set(key, result)
+    return result
   }
 
-  async getCompatibility(
-    clusterId: string,
-    subject: string
-  ): Promise<string> {
+  async getCompatibility(clusterId: string, subject: string): Promise<string> {
     try {
       const result = await this.request<{ compatibilityLevel: string }>(
         clusterId,
@@ -99,12 +124,9 @@ class SchemaRegistryService {
       )
       return result.compatibilityLevel
     } catch (err) {
+      if ((err as { status?: number }).status !== 404) throw err
       // Subject-level config not set — fall back to global
-      const global = await this.request<{ compatibilityLevel: string }>(
-        clusterId,
-        'GET',
-        '/config'
-      )
+      const global = await this.request<{ compatibilityLevel: string }>(clusterId, 'GET', '/config')
       return global.compatibilityLevel
     }
   }
@@ -140,8 +162,17 @@ class SchemaRegistryService {
   async deleteSchemaVersion(
     clusterId: string,
     subject: string,
-    version: number
+    version: number | string
   ): Promise<void> {
+    const referenced = await this.request<number[]>(
+      clusterId,
+      'GET',
+      `/subjects/${encodeURIComponent(subject)}/versions/${version}/referencedby`
+    )
+    if (referenced.length)
+      throw new Error(
+        'This version is referenced by other schemas. Migrate those references before deleting it.'
+      )
     await this.request<number>(
       clusterId,
       'DELETE',
@@ -178,13 +209,11 @@ class SchemaRegistryService {
     }
 
     if (cfg.username && cfg.password) {
-      const credentials = Buffer.from(
-        `${cfg.username}:${cfg.password}`
-      ).toString('base64')
+      const credentials = Buffer.from(`${cfg.username}:${cfg.password}`).toString('base64')
       headers['Authorization'] = `Basic ${credentials}`
     }
 
-    const init: RequestInit = { method, headers }
+    const init: RequestInit = { method, headers, signal: AbortSignal.timeout(15_000) }
 
     if (body !== undefined) {
       init.body = JSON.stringify(body)
@@ -201,8 +230,11 @@ class SchemaRegistryService {
         detail = await response.text().catch(() => '')
       }
 
-      throw new Error(
-        `Schema Registry ${method} ${path} failed (${response.status}): ${detail || response.statusText}`
+      throw Object.assign(
+        new Error(
+          `Schema Registry request failed (${response.status}): ${detail || response.statusText}`
+        ),
+        { status: response.status }
       )
     }
 

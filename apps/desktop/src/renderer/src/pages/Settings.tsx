@@ -22,13 +22,13 @@ import {
 } from 'lucide-react'
 import { useClusterStore } from '@/stores/clusterStore'
 import { useUIStore } from '@/stores/uiStore'
-import type {
-  ClusterConfig,
-  AIProvider,
-  AISettings,
-  AuthMethod,
-  EnvironmentLabel
-} from '@/types'
+import { ENV_COLORS } from '@/types'
+import { Button } from '@/components/common/Controls'
+import { AIMarkdown } from '@/components/common/AIMarkdown'
+import { useConfirmation } from '@/components/common/ConfirmationDialog'
+import type { UpdateState, AIHistoryEntry } from '@/types'
+import { exportCluster } from '@/lib/files'
+import type { ClusterConfig, AIProvider, AISettings, AuthMethod, EnvironmentLabel } from '@/types'
 
 const AUTH_OPTIONS: { value: AuthMethod; label: string }[] = [
   { value: 'none', label: 'None' },
@@ -95,6 +95,12 @@ interface ClusterFormState {
   username: string
   password: string
   schemaRegistryUrl: string
+  registryUsername: string
+  registryPassword: string
+  sslCertPath: string
+  sslClientCertPath: string
+  sslKeyPath: string
+  colorTag: string
 }
 
 const EMPTY_FORM: ClusterFormState = {
@@ -106,7 +112,13 @@ const EMPTY_FORM: ClusterFormState = {
   sslRejectUnauthorized: true,
   username: '',
   password: '',
-  schemaRegistryUrl: ''
+  schemaRegistryUrl: '',
+  registryUsername: '',
+  registryPassword: '',
+  sslCertPath: '',
+  sslClientCertPath: '',
+  sslKeyPath: '',
+  colorTag: ENV_COLORS.local
 }
 
 function SectionHeader({ icon: Icon, title }: { icon: React.ElementType; title: string }) {
@@ -123,7 +135,15 @@ function SectionHeader({ icon: Icon, title }: { icon: React.ElementType; title: 
 // ---------------------------------------------------------------------------
 
 function ClusterManagementSection() {
-  const { clusters, activeClusterId, addCluster, updateCluster, removeCluster, testConnection, connectCluster } = useClusterStore()
+  const {
+    clusters,
+    activeClusterId,
+    addCluster,
+    updateCluster,
+    removeCluster,
+    testConnection,
+    connectCluster
+  } = useClusterStore()
   const addNotification = useUIStore((s) => s.addNotification)
 
   const [showForm, setShowForm] = useState(false)
@@ -152,7 +172,13 @@ function ClusterManagementSection() {
       ssl: form.ssl,
       sslRejectUnauthorized: form.sslRejectUnauthorized,
       environmentLabel: form.environmentLabel,
-      colorTag: ENV_DOT_COLORS[form.environmentLabel],
+      colorTag: form.colorTag,
+      sslCertPath: form.sslCertPath || undefined,
+      sslClientCertPath: form.sslClientCertPath || undefined,
+      sslKeyPath: form.sslKeyPath || undefined,
+      schemaRegistryAuth: form.registryUsername
+        ? { username: form.registryUsername, password: form.registryPassword }
+        : undefined,
       schemaRegistryUrl: form.schemaRegistryUrl || undefined,
       username: isSasl ? form.username : undefined,
       password: isSasl ? form.password : undefined,
@@ -192,6 +218,11 @@ function ClusterManagementSection() {
     setSaving(true)
     try {
       const config = buildConfig()
+      const tested = await testConnection(config)
+      if (!tested.success)
+        throw new Error(
+          tested.error ?? 'Connection test failed. Check broker settings before saving.'
+        )
       if (editingId) {
         const { id: _, createdAt: __, ...updates } = config
         await updateCluster(editingId, updates)
@@ -229,7 +260,15 @@ function ClusterManagementSection() {
       sslRejectUnauthorized: cluster.sslRejectUnauthorized ?? true,
       username: cluster.username ?? '',
       password: cluster.password ?? '',
-      schemaRegistryUrl: cluster.schemaRegistryUrl ?? ''
+      schemaRegistryUrl: cluster.schemaRegistryUrl ?? '',
+      registryUsername: cluster.schemaRegistryAuth?.username ?? '',
+      registryPassword: cluster.schemaRegistryAuth?.password ?? '',
+      sslCertPath: cluster.sslCertPath ?? '',
+      sslClientCertPath: cluster.sslClientCertPath ?? '',
+      sslKeyPath: cluster.sslKeyPath ?? '',
+      colorTag: cluster.colorTag.startsWith('#')
+        ? cluster.colorTag
+        : ENV_COLORS[cluster.environmentLabel]
     })
     setShowForm(true)
     setTestResult(null)
@@ -249,7 +288,7 @@ function ClusterManagementSection() {
   }
 
   function handleExport() {
-    const exportable = clusters.map(({ password: _, ...rest }) => rest)
+    const exportable = clusters.map(exportCluster)
     const blob = new Blob([JSON.stringify(exportable, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -279,9 +318,14 @@ function ClusterManagementSection() {
             ssl: item.ssl ?? false,
             sslRejectUnauthorized: item.sslRejectUnauthorized ?? true,
             environmentLabel: item.environmentLabel ?? 'local',
-            colorTag: ENV_DOT_COLORS[item.environmentLabel as EnvironmentLabel] ?? ENV_DOT_COLORS.local,
+            colorTag:
+              item.colorTag ??
+              ENV_COLORS[item.environmentLabel as EnvironmentLabel] ??
+              ENV_COLORS.local,
+            sslCertPath: item.sslCertPath,
+            sslClientCertPath: item.sslClientCertPath,
+            sslKeyPath: item.sslKeyPath,
             schemaRegistryUrl: item.schemaRegistryUrl,
-            username: item.username,
             createdAt: Date.now(),
             updatedAt: Date.now()
           }
@@ -324,12 +368,25 @@ function ClusterManagementSection() {
             </div>
             <div className="flex items-center gap-1">
               <button
+                aria-label={`Edit ${cluster.name}`}
                 onClick={() => handleEdit(cluster)}
                 className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-3 hover:text-text-secondary"
               >
                 <Pencil size={13} />
               </button>
               <button
+                aria-label={`Duplicate ${cluster.name}`}
+                onClick={() => {
+                  handleEdit(cluster)
+                  setEditingId(null)
+                  setForm((f) => ({ ...f, name: f.name + ' copy' }))
+                }}
+                className="rounded bg-surface-3 px-2 py-1 text-xs"
+              >
+                Duplicate
+              </button>
+              <button
+                aria-label={`Delete ${cluster.name}`}
                 onClick={() => handleDeleteRequest(cluster)}
                 className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-danger/10 hover:text-danger"
               >
@@ -361,6 +418,7 @@ function ClusterManagementSection() {
                 Type the cluster name to confirm:
               </label>
               <input
+                aria-label="Type the cluster name to confirm:"
                 type="text"
                 value={deleteConfirmName}
                 onChange={(e) => setDeleteConfirmName(e.target.value)}
@@ -374,8 +432,7 @@ function ClusterManagementSection() {
             <button
               onClick={handleDeleteConfirm}
               disabled={
-                deleteTarget.environmentLabel === 'prod' &&
-                deleteConfirmName !== deleteTarget.name
+                deleteTarget.environmentLabel === 'prod' && deleteConfirmName !== deleteTarget.name
               }
               className="flex items-center gap-1.5 rounded-lg bg-danger px-4 py-2 text-xs text-white transition-colors hover:bg-danger/90 disabled:opacity-40"
             >
@@ -411,6 +468,7 @@ function ClusterManagementSection() {
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-text-secondary">Display Name</label>
               <input
+                aria-label="Display Name"
                 type="text"
                 value={form.name}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
@@ -421,6 +479,7 @@ function ClusterManagementSection() {
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-text-secondary">Bootstrap Servers</label>
               <input
+                aria-label="Bootstrap Servers"
                 type="text"
                 value={form.bootstrapServers}
                 onChange={(e) => setForm((f) => ({ ...f, bootstrapServers: e.target.value }))}
@@ -516,6 +575,7 @@ function ClusterManagementSection() {
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-text-secondary">Username</label>
                   <input
+                    aria-label="Username"
                     type="text"
                     value={form.username}
                     onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
@@ -526,6 +586,7 @@ function ClusterManagementSection() {
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-text-secondary">Password</label>
                   <input
+                    aria-label="Password"
                     type="password"
                     value={form.password}
                     onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
@@ -550,6 +611,60 @@ function ClusterManagementSection() {
             </div>
           </div>
 
+          <div className="space-y-3">
+            <label className="block text-xs">
+              Color tag{' '}
+              <input
+                aria-label="Cluster color"
+                type="color"
+                value={form.colorTag}
+                onChange={(e) => setForm((f) => ({ ...f, colorTag: e.target.value }))}
+              />
+            </label>
+            {(form.ssl || form.authMethod === 'ssl') &&
+              (['sslCertPath', 'sslClientCertPath', 'sslKeyPath'] as const).map((key, i) => (
+                <div key={key} className="flex gap-2">
+                  <input
+                    aria-label={['CA certificate', 'Client certificate', 'Private key'][i]}
+                    className={inputClasses}
+                    placeholder={
+                      ['CA certificate path', 'Client certificate path', 'Private key path'][i]
+                    }
+                    value={form[key]}
+                    onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+                  />
+                  <button
+                    type="button"
+                    className="rounded bg-surface-3 px-3"
+                    onClick={async () => {
+                      const res = await window.api.app.selectCertificate()
+                      if (res.data) setForm((f) => ({ ...f, [key]: res.data! }))
+                    }}
+                  >
+                    Browse
+                  </button>
+                </div>
+              ))}
+            {form.schemaRegistryUrl && (
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  aria-label="Registry username"
+                  className={inputClasses}
+                  placeholder="Registry username"
+                  value={form.registryUsername}
+                  onChange={(e) => setForm((f) => ({ ...f, registryUsername: e.target.value }))}
+                />
+                <input
+                  aria-label="Registry password"
+                  className={inputClasses}
+                  type="password"
+                  placeholder="Registry password"
+                  value={form.registryPassword}
+                  onChange={(e) => setForm((f) => ({ ...f, registryPassword: e.target.value }))}
+                />
+              </div>
+            )}
+          </div>
           {testResult && (
             <div
               className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs ${
@@ -642,7 +757,14 @@ interface AIFormProps {
   onSave: () => void
 }
 
-function AISettingsForm({ settings, setSettings, showKey, setShowKey, savingAI, onSave }: AIFormProps) {
+function AISettingsForm({
+  settings,
+  setSettings,
+  showKey,
+  setShowKey,
+  savingAI,
+  onSave
+}: AIFormProps) {
   const [fetchedModels, setFetchedModels] = useState<string[] | null>(null)
   const [fetchingModels, setFetchingModels] = useState(false)
 
@@ -663,22 +785,10 @@ function AISettingsForm({ settings, setSettings, showKey, setShowKey, savingAI, 
     if (!settings.apiKey.trim() || settings.provider !== 'openai') return
     setFetchingModels(true)
     try {
-      const res = await fetch('https://api.openai.com/v1/models', {
-        headers: { Authorization: `Bearer ${settings.apiKey}` }
-      })
-      if (res.ok) {
-        const data = await res.json()
-        const gptModels = (data.data as { id: string }[])
-          .map((m) => m.id)
-          .filter((id) => id.startsWith('gpt-'))
-          .sort()
-        if (gptModels.length > 0) {
-          setFetchedModels(gptModels)
-          if (!gptModels.includes(settings.model)) {
-            setSettings((s) => ({ ...s, model: gptModels[0] }))
-          }
-          return
-        }
+      const res = await window.api.ai.models(settings)
+      if (res.success && res.data?.length) {
+        setFetchedModels(res.data)
+        return
       }
       setFetchedModels(null)
     } catch {
@@ -733,7 +843,7 @@ function AISettingsForm({ settings, setSettings, showKey, setShowKey, savingAI, 
         </div>
         <p className="flex items-center gap-1.5 text-[11px] text-text-muted">
           <Shield size={10} />
-          Your API key is stored locally in the application database
+          Your API key is stored in macOS Keychain
         </p>
       </div>
 
@@ -747,7 +857,11 @@ function AISettingsForm({ settings, setSettings, showKey, setShowKey, savingAI, 
               disabled={fetchingModels || !settings.apiKey.trim()}
               className="flex items-center gap-1 text-[11px] text-accent hover:text-accent-hover transition-colors disabled:opacity-40"
             >
-              {fetchingModels ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+              {fetchingModels ? (
+                <Loader2 size={10} className="animate-spin" />
+              ) : (
+                <RefreshCw size={10} />
+              )}
               Fetch models
             </button>
           )}
@@ -774,6 +888,7 @@ function AISettingsForm({ settings, setSettings, showKey, setShowKey, savingAI, 
       <div className="space-y-1.5">
         <label className="text-xs font-medium text-text-secondary">Field Redaction</label>
         <input
+          aria-label="Field Redaction"
           type="text"
           value={settings.redactedFields.join(', ')}
           onChange={(e) =>
@@ -814,7 +929,10 @@ function AIConfigSection() {
     provider: 'openai',
     apiKey: '',
     model: 'gpt-4o',
-    redactedFields: ['password', 'token', 'ssn', 'secret']
+    redactedFields: ['password', 'token', 'ssn', 'secret'],
+    consent: false,
+    features: {},
+    anomalyThreshold: 1000
   })
   const [showKey, setShowKey] = useState(false)
   const [loaded, setLoaded] = useState(false)
@@ -827,6 +945,7 @@ function AIConfigSection() {
         const res = await window.api.settings.getAI()
         if (!cancelled && res.success && res.data) {
           setSettings({
+            ...res.data,
             enabled: res.data.enabled,
             provider: res.data.provider,
             apiKey: res.data.apiKey ?? '',
@@ -840,11 +959,7 @@ function AIConfigSection() {
         if (!cancelled) setLoaded(true)
       }
     }
-    if (window.api?.settings?.getAI) {
-      load()
-    } else {
-      setLoaded(true)
-    }
+    void load()
     return () => {
       cancelled = true
     }
@@ -856,15 +971,6 @@ function AIConfigSection() {
       if (window.api?.settings?.saveAI) {
         const res = await window.api.settings.saveAI(settings)
         if (!res.success) throw new Error(res.error ?? 'Failed to save AI settings')
-      }
-      if (window.api?.ai?.configure) {
-        await window.api.ai.configure({
-          enabled: settings.enabled,
-          provider: settings.provider,
-          apiKey: settings.apiKey,
-          model: settings.model,
-          redactedFields: settings.redactedFields
-        })
       }
       addNotification('success', 'AI settings saved')
     } catch (err) {
@@ -894,7 +1000,17 @@ function AIConfigSection() {
               </div>
             </div>
             <button
-              onClick={() => setSettings((s) => ({ ...s, enabled: !s.enabled }))}
+              role="switch"
+              aria-label="Enable AI assistant"
+              aria-checked={settings.enabled}
+              onClick={async () => {
+                const next = { ...settings, enabled: !settings.enabled }
+                setSettings(next)
+                if (!next.enabled) {
+                  const r = await window.api.settings.saveAI(next)
+                  if (!r.success) addNotification('error', r.error ?? 'Could not disable AI')
+                }
+              }}
               className={`relative h-6 w-11 rounded-full transition-colors ${
                 settings.enabled ? 'bg-accent' : 'bg-surface-3'
               }`}
@@ -907,6 +1023,72 @@ function AIConfigSection() {
             </button>
           </div>
 
+          {settings.enabled && (
+            <div className="space-y-3 rounded border border-border p-4 text-xs">
+              <label className="flex gap-2">
+                <input
+                  type="checkbox"
+                  checked={settings.consent ?? false}
+                  onChange={(e) => setSettings((s) => ({ ...s, consent: e.target.checked }))}
+                />
+                I consent to sending selected payloads and configuration to my AI provider.
+                Redaction applies before transmission.
+              </label>
+              <label className="flex gap-2">
+                <input
+                  type="checkbox"
+                  checked={settings.historyEnabled ?? false}
+                  onChange={(e) => setSettings((s) => ({ ...s, historyEnabled: e.target.checked }))}
+                />
+                Save the last 50 AI responses locally. Inputs are never saved. Clear saved responses
+                below.
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {(
+                  ['messages', 'dlq', 'topics', 'schemas', 'health', 'search', 'anomalies'] as const
+                ).map((feature) => (
+                  <label key={feature} className="flex gap-2">
+                    <input
+                      type="checkbox"
+                      checked={
+                        feature === 'anomalies'
+                          ? settings.features?.[feature] === true
+                          : settings.features?.[feature] !== false
+                      }
+                      onChange={(e) =>
+                        setSettings((s) => ({
+                          ...s,
+                          features: { ...s.features, [feature]: e.target.checked }
+                        }))
+                      }
+                    />
+                    {feature}
+                  </label>
+                ))}
+              </div>
+              <label>
+                Lag growth threshold (messages per minute){' '}
+                <input
+                  aria-label="Lag growth threshold"
+                  type="number"
+                  min={1}
+                  className={inputClasses}
+                  value={settings.anomalyThreshold ?? 1000}
+                  onChange={(e) =>
+                    setSettings((s) => ({ ...s, anomalyThreshold: Number(e.target.value) }))
+                  }
+                />
+              </label>
+            </div>
+          )}
+          {!settings.enabled && (
+            <button
+              onClick={() => void handleSaveAI()}
+              className="rounded bg-accent px-4 py-2 text-white"
+            >
+              Save AI disabled
+            </button>
+          )}
           {settings.enabled && (
             <AISettingsForm
               settings={settings}
@@ -938,10 +1120,64 @@ function DisplaySection() {
   const applyFontSize = useCallback((size: 'small' | 'medium' | 'large') => {
     setFontSize(size)
     document.documentElement.style.setProperty('--app-font-size', FONT_SIZE_MAP[size])
+    void window.api.settings
+      .get('display')
+      .then((res) =>
+        window.api.settings.set(
+          'display',
+          JSON.stringify({ ...(res.data ? JSON.parse(res.data) : {}), fontSize: size })
+        )
+      )
   }, [])
 
+  const [patterns, setPatterns] = useState('.dlq,-dlq,.DLT,-dlt,.retry,-retry,-error')
+  useEffect(() => {
+    void window.api.settings.get('display').then((res) => {
+      if (res.data) {
+        try {
+          const p = JSON.parse(res.data)
+          if (['small', 'medium', 'large'].includes(p.fontSize)) setFontSize(p.fontSize)
+          if (Array.isArray(p.dlqPatterns))
+            setPatterns(p.dlqPatterns.filter((v: unknown) => typeof v === 'string').join(','))
+        } catch {
+          useUIStore
+            .getState()
+            .addNotification(
+              'warning',
+              'Display preferences could not be read. Save them again in Settings.'
+            )
+        }
+      }
+    })
+  }, [])
   return (
     <section className="space-y-4">
+      <label className="block text-sm">
+        DLQ topic patterns (comma separated substrings)
+        <input
+          aria-label="DLQ patterns"
+          className={inputClasses}
+          value={patterns}
+          onChange={(e) => setPatterns(e.target.value)}
+        />
+      </label>
+      <button
+        className="rounded bg-surface-3 px-3 py-2 text-xs"
+        onClick={() =>
+          void window.api.settings.set(
+            'display',
+            JSON.stringify({
+              fontSize,
+              dlqPatterns: patterns
+                .split(',')
+                .map((v) => v.trim())
+                .filter(Boolean)
+            })
+          )
+        }
+      >
+        Save detection patterns
+      </button>
       <SectionHeader icon={Monitor} title="Display" />
 
       <div className="space-y-3 rounded-lg border border-border bg-surface-1 p-5">
@@ -968,27 +1204,9 @@ function DisplaySection() {
           </div>
         </div>
 
-        {/* Theme */}
-        <div className="border-t border-border pt-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm text-text-primary">Theme</div>
-              <div className="text-xs text-text-muted">Switch between dark and light mode</div>
-            </div>
-            <div className="flex gap-1 rounded-lg bg-surface-2 p-1">
-              <button className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white shadow-sm">
-                <Check size={12} />
-                Dark
-              </button>
-              <button
-                disabled
-                className="rounded-md px-3 py-1.5 text-xs font-medium text-text-muted"
-              >
-                Light
-                <span className="ml-1 text-[10px] text-text-muted">(coming soon)</span>
-              </button>
-            </div>
-          </div>
+        <div className="flex justify-between border-t border-border pt-3 text-sm">
+          <span>Appearance</span>
+          <span className="text-text-secondary">Dark</span>
         </div>
       </div>
     </section>
@@ -1053,8 +1271,158 @@ export function Settings() {
           <AIConfigSection />
           <DisplaySection />
           <ShortcutsSection />
+          <AIHistorySection />
+          <UpdateSection />
         </div>
       </div>
     </div>
+  )
+}
+
+function AIHistorySection() {
+  const [entries, setEntries] = useState<AIHistoryEntry[]>([])
+  const [selected, setSelected] = useState<number | null>(null)
+  const { confirm, dialog } = useConfirmation()
+  useEffect(() => {
+    let alive = true
+    void window.api.ai.history().then((r) => {
+      if (alive && r.success) setEntries(r.data ?? [])
+    })
+    return () => {
+      alive = false
+    }
+  }, [])
+  return (
+    <section className="space-y-3">
+      <SectionHeader icon={Sparkles} title="Saved AI responses" />
+      <p className="text-xs text-text-muted">
+        Optional local history. Enable saving in AI Configuration; payload inputs are excluded.
+      </p>
+      {entries.length === 0 ? (
+        <p className="text-xs text-text-muted">No saved responses.</p>
+      ) : (
+        <>
+          <Button
+            onClick={async () => {
+              if (
+                !(await confirm({
+                  title: 'Clear AI history?',
+                  message: 'Permanently remove every saved AI response.'
+                }))
+              )
+                return
+              const r = await window.api.ai.clearHistory()
+              if (r.success) {
+                setEntries([])
+                setSelected(null)
+              } else
+                useUIStore.getState().addNotification('error', r.error ?? 'Could not clear history')
+            }}
+          >
+            Clear history
+          </Button>
+          {entries.map((e) => (
+            <div key={e.id} className="rounded border border-border p-3">
+              <button
+                className="text-xs"
+                onClick={() => setSelected(selected === e.id ? null : e.id)}
+                aria-expanded={selected === e.id}
+              >
+                {e.feature} · {e.provider} / {e.model} · {new Date(e.at).toLocaleString()}
+              </button>
+              {selected === e.id && <AIMarkdown content={e.response.content} />}
+            </div>
+          ))}
+        </>
+      )}
+      {dialog}
+    </section>
+  )
+}
+function UpdateSection() {
+  const [state, setState] = useState<UpdateState>({ status: 'idle' })
+  const { confirm, dialog } = useConfirmation()
+  useEffect(() => {
+    let alive = true
+    const read = () =>
+      void window.api.app.updateState().then((r) => {
+        if (alive && r.data) setState(r.data)
+      })
+    read()
+    const timer = setInterval(read, 2000)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [])
+  const busy = ['checking', 'downloading'].includes(state.status)
+  const message =
+    state.status === 'unsupported'
+      ? 'Updates are available in installed builds.'
+      : state.status === 'current'
+        ? `KafkaLens ${state.version} is up to date.`
+        : state.status === 'available'
+          ? `Version ${state.version} is available.`
+          : state.status === 'ready'
+            ? `Version ${state.version} is ready. Restart to install.`
+            : state.status === 'downloading'
+              ? `Downloading update: ${Math.round(state.percent ?? 0)}%`
+              : state.status === 'error'
+                ? state.error
+                : state.status === 'checking'
+                  ? 'Checking for updates…'
+                  : 'Check for a new KafkaLens release.'
+  return (
+    <section className="space-y-3">
+      <SectionHeader icon={Download} title="Application updates" />
+      <p role="status" className="text-xs text-text-secondary">
+        {message}
+      </p>
+      <div className="flex gap-2">
+        <Button
+          disabled={busy || state.status === 'ready'}
+          onClick={async () => {
+            const r = await window.api.app.checkUpdate()
+            if (r.data) setState(r.data)
+          }}
+        >
+          Check for updates
+        </Button>
+        {state.status === 'available' && (
+          <Button
+            onClick={async () => {
+              setState((s) => ({ ...s, status: 'downloading', percent: 0 }))
+              const r = await window.api.app.downloadUpdate()
+              if (!r.success)
+                useUIStore.getState().addNotification('error', r.error ?? 'Update download failed')
+            }}
+          >
+            Download update
+          </Button>
+        )}
+        {state.status === 'ready' && (
+          <Button
+            onClick={async () => {
+              if (
+                !(await confirm({
+                  title: 'Restart KafkaLens?',
+                  message:
+                    'KafkaLens will close its connections and restart to install the downloaded update.'
+                }))
+              )
+                return
+              const r = await window.api.app.installUpdate()
+              if (!r.success)
+                useUIStore
+                  .getState()
+                  .addNotification('error', r.error ?? 'Could not install update')
+            }}
+          >
+            Restart and install
+          </Button>
+        )}
+      </div>
+      {dialog}
+    </section>
   )
 }

@@ -1,3 +1,4 @@
+import { useRefresh } from '@/lib/useRefresh'
 import { useState, useEffect, useMemo } from 'react'
 import {
   LayoutDashboard,
@@ -13,7 +14,7 @@ import {
   Sparkles,
   Loader2,
   Unplug,
-  X,
+  X
 } from 'lucide-react'
 import { AIMarkdown } from '@/components/common/AIMarkdown'
 import { useClusterStore } from '@/stores/clusterStore'
@@ -37,9 +38,14 @@ function formatRetention(ms: number): string {
   return `${Math.round(hours)}h`
 }
 
-function SkeletonCard() {
+function SkeletonCard({ label }: { label: string }) {
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-border bg-surface-1 p-5 animate-pulse">
+    <div
+      role="region"
+      aria-label={`${label} summary`}
+      aria-busy="true"
+      className="flex flex-col gap-3 rounded-lg border border-border bg-surface-1 p-5 animate-pulse"
+    >
       <div className="flex items-center justify-between">
         <div className="h-4 w-24 rounded bg-surface-3" />
         <div className="h-5 w-5 rounded bg-surface-3" />
@@ -77,7 +83,9 @@ function AIHealthModal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
     >
       <div className="animate-fade-in flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-surface-1 shadow-2xl">
         {/* Header */}
@@ -137,11 +145,24 @@ export default function ClusterDashboard() {
     topicsLoading,
     consumerGroupsLoading,
     brokersLoading,
+    topicsLoaded,
+    consumerGroupsLoaded,
+    brokersLoaded,
+    topicsError,
+    consumerGroupsError,
+    brokersError,
     fetchTopics,
     fetchConsumerGroups,
     fetchBrokers
   } = useDataStore()
 
+  useRefresh(() => {
+    if (activeClusterId) {
+      void fetchTopics(activeClusterId)
+      void fetchConsumerGroups(activeClusterId)
+      void fetchBrokers(activeClusterId)
+    }
+  })
   const [aiSummary, setAiSummary] = useState<string | null>(null)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
@@ -153,11 +174,8 @@ export default function ClusterDashboard() {
     fetchBrokers(activeClusterId)
   }, [activeClusterId, fetchTopics, fetchConsumerGroups, fetchBrokers])
 
-  const isConnected = activeClusterId
-    ? connections[activeClusterId]?.status === 'connected'
-    : false
-
-  const isLoading = topicsLoading || consumerGroupsLoading || brokersLoading
+  const initialTopicsLoading = topicsLoading && !topicsLoaded
+  const initialGroupsLoading = consumerGroupsLoading && !consumerGroupsLoaded
 
   const stats = useMemo(() => {
     const userTopics = topics.filter((t) => !t.isInternal)
@@ -196,19 +214,56 @@ export default function ClusterDashboard() {
     try {
       const configured = await window.api.ai.isConfigured()
       if (!configured?.data) {
-        setAiSummary('AI is not configured. Go to Settings (⌘7) → AI Configuration to add your API key.')
+        setAiSummary(
+          'AI is not configured. Go to Settings (⌘7) → AI Configuration to add your API key.'
+        )
         return
       }
+      if (!activeClusterId) return
+      const store = useDataStore.getState()
+      await Promise.all([
+        store.fetchTopics(activeClusterId),
+        store.fetchConsumerGroups(activeClusterId),
+        store.fetchBrokers(activeClusterId)
+      ])
+      const registry = useClusterStore
+        .getState()
+        .clusters.find((c) => c.id === activeClusterId)?.schemaRegistryUrl
+      if (registry) await store.fetchSchemaSubjects(activeClusterId)
+      const fresh = useDataStore.getState()
+      if (fresh.clusterId !== activeClusterId) return
       const result = await window.api.ai.clusterHealth({
-        topics: stats.topicCount,
-        consumerGroups: stats.consumerGroupCount,
-        brokers: stats.brokerCount,
-        underReplicatedPartitions: unhealthyTopics.length,
-        totalLag: consumerGroups.reduce((sum, g) => sum + (g.totalLag ?? 0), 0),
-        dlqMessages: stats.dlqMessages
+        topics: fresh.topics.length,
+        consumerGroups: fresh.consumerGroups.length,
+        brokers: fresh.brokers.length,
+        underReplicatedPartitions: fresh.topics.reduce(
+          (n, t) => n + t.underReplicatedPartitions,
+          0
+        ),
+        offlinePartitions: fresh.topics.reduce((n, t) => n + (t.offlinePartitions ?? 0), 0),
+        topicConfigs: fresh.topics
+          .filter((t) => !t.isInternal)
+          .slice(0, 50)
+          .map((t) => ({ name: t.name, configs: t.configs })),
+        lagTrends: fresh.lagHistory,
+        totalLag: fresh.consumerGroups.reduce((sum, g) => sum + g.totalLag, 0),
+        lagUnavailableGroups: fresh.consumerGroups.filter((g) => g.lagError).length,
+        dlqMessages: fresh.topics
+          .filter((t) => t.isDLQ)
+          .reduce((sum, t) => sum + t.messageCount, 0),
+        schemaSubjects: fresh.schemaSubjects.map((s) => ({
+          subject: s.subject,
+          compatibility: s.compatibility,
+          latestVersion: s.latestVersion,
+          schemaType: s.schemaType
+        }))
       })
       if (result?.success && result.data) {
-        setAiSummary(typeof result.data === 'string' ? result.data : (result.data as { content: string }).content)
+        setAiSummary(
+          typeof result.data === 'string'
+            ? result.data
+            : (result.data as { content: string }).content
+        )
       } else {
         setAiSummary(result?.error ?? 'Unable to generate health summary.')
       }
@@ -225,28 +280,40 @@ export default function ClusterDashboard() {
       label: 'Topics',
       value: stats.topicCount,
       description: 'User topics (excl. internal)',
-      color: 'text-info'
+      color: 'text-info',
+      loading: initialTopicsLoading,
+      loaded: topicsLoaded,
+      error: topicsError
     },
     {
       icon: Users,
       label: 'Consumer Groups',
       value: stats.consumerGroupCount,
       description: 'Active groups across cluster',
-      color: 'text-accent'
+      color: 'text-accent',
+      loading: initialGroupsLoading,
+      loaded: consumerGroupsLoaded,
+      error: consumerGroupsError
     },
     {
       icon: Server,
       label: 'Brokers',
       value: stats.brokerCount,
       description: 'Nodes in cluster',
-      color: 'text-success'
+      color: 'text-success',
+      loading: brokersLoading && !brokersLoaded,
+      loaded: brokersLoaded,
+      error: brokersError
     },
     {
       icon: Skull,
       label: 'DLQ Messages',
       value: stats.dlqMessages,
       description: `Across ${stats.dlqCount} dead-letter topics`,
-      color: 'text-danger'
+      color: 'text-danger',
+      loading: initialTopicsLoading,
+      loaded: topicsLoaded,
+      error: topicsError
     }
   ]
 
@@ -257,9 +324,7 @@ export default function ClusterDashboard() {
         <div className="flex items-center gap-3 rounded-lg border border-warning/30 bg-warning/10 px-5 py-3">
           <Unplug className="h-5 w-5 text-warning shrink-0" />
           <div className="flex flex-col">
-            <span className="text-sm font-medium text-text-primary">
-              No cluster connected
-            </span>
+            <span className="text-sm font-medium text-text-primary">No cluster connected</span>
             <span className="text-xs text-text-muted">
               Connect to a cluster from the sidebar to view live data.
             </span>
@@ -270,12 +335,10 @@ export default function ClusterDashboard() {
         <div className="flex items-center gap-3 rounded-lg border border-danger/30 bg-danger/10 px-5 py-3">
           <AlertTriangle className="h-5 w-5 text-danger shrink-0" />
           <div className="flex flex-col">
-            <span className="text-sm font-medium text-text-primary">
-              Connection failed
-            </span>
+            <span className="text-sm font-medium text-text-primary">Connection failed</span>
             <span className="text-xs text-text-muted">
-              {connections[activeClusterId]?.error ?? 'Unable to connect to the Kafka broker.'}
-              {' '}Check your cluster settings — you may need to change the authentication method.
+              {connections[activeClusterId]?.error ?? 'Unable to connect to the Kafka broker.'}{' '}
+              Check your cluster settings — you may need to change the authentication method.
             </span>
           </div>
         </div>
@@ -312,23 +375,35 @@ export default function ClusterDashboard() {
 
       {/* Stat cards */}
       <div className="grid grid-cols-4 gap-4">
-        {isLoading
-          ? Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
-          : statCards.map((card) => (
-              <div
-                key={card.label}
-                className="flex flex-col gap-3 rounded-lg border border-border bg-surface-1 p-5"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-text-secondary">{card.label}</span>
-                  <card.icon className={`h-5 w-5 ${card.color}`} />
-                </div>
-                <span className="text-3xl font-bold text-text-primary">
-                  {card.value.toLocaleString()}
-                </span>
-                <span className="text-xs text-text-muted">{card.description}</span>
+        {statCards.map((card) =>
+          card.loading ? (
+            <SkeletonCard key={card.label} label={card.label} />
+          ) : (
+            <div
+              key={card.label}
+              role="region"
+              aria-label={`${card.label} summary`}
+              aria-busy="false"
+              title={card.error ?? undefined}
+              className="flex flex-col gap-3 rounded-lg border border-border bg-surface-1 p-5"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-text-secondary">{card.label}</span>
+                <card.icon className={`h-5 w-5 ${card.color}`} />
               </div>
-            ))}
+              <span className="text-3xl font-bold text-text-primary">
+                {card.error && !card.loaded ? 'Unavailable' : card.value.toLocaleString()}
+              </span>
+              <span className="text-xs text-text-muted">
+                {card.error
+                  ? card.loaded
+                    ? 'Showing previous data; refresh failed'
+                    : 'Check broker access and refresh'
+                  : card.description}
+              </span>
+            </div>
+          )
+        )}
       </div>
 
       {/* Middle section */}
@@ -345,7 +420,7 @@ export default function ClusterDashboard() {
             </button>
           </div>
 
-          {topicsLoading ? (
+          {initialTopicsLoading ? (
             <div className="flex flex-col divide-y divide-border">
               {Array.from({ length: 4 }).map((_, i) => (
                 <SkeletonRow key={i} />
@@ -414,7 +489,7 @@ export default function ClusterDashboard() {
             </button>
           </div>
 
-          {consumerGroupsLoading ? (
+          {initialGroupsLoading ? (
             <div className="flex flex-col">
               {Array.from({ length: 5 }).map((_, i) => (
                 <SkeletonRow key={i} />
@@ -423,7 +498,7 @@ export default function ClusterDashboard() {
           ) : (
             <div className="flex flex-col">
               {consumerGroups.map((group) => {
-                const style = STATE_STYLES[group.state]
+                const style = STATE_STYLES[group.state] ?? STATE_STYLES.Empty
                 return (
                   <div
                     key={group.groupId}
@@ -439,10 +514,16 @@ export default function ClusterDashboard() {
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
-                      {group.totalLag > 0 && (
-                        <span className="text-xs text-text-secondary">
-                          lag: {group.totalLag.toLocaleString()}
+                      {group.lagError ? (
+                        <span className="text-xs text-warning" title={group.lagError}>
+                          Lag unavailable
                         </span>
+                      ) : (
+                        group.totalLag > 0 && (
+                          <span className="text-xs text-text-secondary">
+                            lag: {group.totalLag.toLocaleString()}
+                          </span>
+                        )
                       )}
                       <span
                         className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${style.bg} ${style.text}`}
@@ -453,9 +534,9 @@ export default function ClusterDashboard() {
                   </div>
                 )
               })}
-              {consumerGroups.length === 0 && !consumerGroupsLoading && (
+              {consumerGroups.length === 0 && !initialGroupsLoading && (
                 <div className="px-5 py-8 text-center text-sm text-text-muted">
-                  No consumer groups found.
+                  {consumerGroupsError ?? 'No consumer groups found.'}
                 </div>
               )}
             </div>
@@ -478,7 +559,7 @@ export default function ClusterDashboard() {
           </button>
         </div>
 
-        {topicsLoading ? (
+        {initialTopicsLoading ? (
           <div className="flex flex-col divide-y divide-border">
             {Array.from({ length: 3 }).map((_, i) => (
               <div key={i} className="flex items-center gap-3 px-5 py-3 animate-pulse">

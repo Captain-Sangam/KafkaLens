@@ -4,6 +4,8 @@ import { useUIStore } from '@/stores/uiStore'
 import { useClusterStore } from '@/stores/clusterStore'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import ClusterDashboard from '@/pages/ClusterDashboard'
+import PartitionInspector from '@/pages/PartitionInspector'
+import { useMonitoring } from '@/lib/useMonitoring'
 import TopicList from '@/pages/TopicList'
 import MessageBrowser from '@/pages/MessageBrowser'
 import ConsumerGroups from '@/pages/ConsumerGroups'
@@ -14,6 +16,7 @@ import { Settings } from '@/pages/Settings'
 import { NotificationToasts } from '@/components/common/NotificationToasts'
 
 function App(): React.ReactElement {
+  useMonitoring()
   const currentPage = useUIStore((s) => s.currentPage)
   const loadClusters = useClusterStore((s) => s.loadClusters)
 
@@ -24,6 +27,7 @@ function App(): React.ReactElement {
   const pageMap: Record<string, React.ReactNode> = {
     dashboard: <ClusterDashboard />,
     topics: <TopicList />,
+    partitions: <PartitionInspector />,
     messages: <MessageBrowser />,
     'consumer-groups': <ConsumerGroups />,
     'schema-registry': <SchemaRegistry />,

@@ -21,6 +21,7 @@ interface Command {
 
 const COMMANDS: Command[] = [
   { id: 'dashboard', label: 'Go to Dashboard', icon: LayoutDashboard, shortcut: '⌘1' },
+  { id: 'partitions', label: 'Go to Partitions', icon: FolderTree },
   { id: 'topics', label: 'Go to Topics', icon: FolderTree, shortcut: '⌘2' },
   { id: 'consumer-groups', label: 'Go to Consumer Groups', icon: Users, shortcut: '⌘3' },
   { id: 'schema-registry', label: 'Go to Schema Registry', icon: FileCode2, shortcut: '⌘4' },
@@ -35,9 +36,7 @@ export function CommandPalette() {
   const [activeIndex, setActiveIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const filtered = COMMANDS.filter((cmd) =>
-    cmd.label.toLowerCase().includes(query.toLowerCase())
-  )
+  const filtered = COMMANDS.filter((cmd) => cmd.label.toLowerCase().includes(query.toLowerCase()))
 
   const execute = useCallback(
     (cmd: Command) => {
@@ -114,9 +113,7 @@ export function CommandPalette() {
         {/* Command list */}
         <ul className="max-h-72 overflow-y-auto py-1">
           {filtered.length === 0 && (
-            <li className="px-3 py-6 text-center text-xs text-text-muted">
-              No commands found
-            </li>
+            <li className="px-3 py-6 text-center text-xs text-text-muted">No commands found</li>
           )}
           {filtered.map((cmd, i) => {
             const Icon = cmd.icon

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Wifi, WifiOff, Keyboard } from 'lucide-react'
 import { useClusterStore } from '@/stores/clusterStore'
+import { useDataStore } from '@/stores/dataStore'
 import type { ConnectionStatus } from '@/types'
 
 const STATUS_DOT: Record<ConnectionStatus, string> = {
@@ -12,6 +13,7 @@ const STATUS_DOT: Record<ConnectionStatus, string> = {
 
 export function StatusBar() {
   const { clusters, activeClusterId, connections } = useClusterStore()
+  const lastRefresh = useDataStore((s) => s.lastRefresh)
   const [now, setNow] = useState(() => new Date())
 
   const activeCluster = clusters.find((c) => c.id === activeClusterId)
@@ -23,7 +25,7 @@ export function StatusBar() {
     return () => clearInterval(id)
   }, [])
 
-  const formattedTime = now.toLocaleTimeString(undefined, {
+  const formattedTime = (lastRefresh ? new Date(lastRefresh) : now).toLocaleTimeString(undefined, {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit'
@@ -38,19 +40,22 @@ export function StatusBar() {
         <span className="truncate">
           {activeCluster?.name ?? 'No cluster'}
           {activeConnection?.brokerCount != null && (
-            <span className="text-text-muted"> · {activeConnection.brokerCount} broker{activeConnection.brokerCount !== 1 ? 's' : ''}</span>
+            <span className="text-text-muted">
+              {' '}
+              · {activeConnection.brokerCount} broker{activeConnection.brokerCount !== 1 ? 's' : ''}
+            </span>
           )}
         </span>
       </div>
 
       {/* Center: last refresh */}
-      <span className="hidden sm:block">Last refresh {formattedTime}</span>
+      <span className="hidden sm:block">
+        {lastRefresh ? `Last refresh ${formattedTime}` : 'Not refreshed yet'}
+      </span>
 
       {/* Right: kafka version + shortcut hint */}
       <div className="flex items-center gap-3">
-        {activeConnection?.kafkaVersion && (
-          <span>Kafka {activeConnection.kafkaVersion}</span>
-        )}
+        {activeConnection?.kafkaVersion && <span>Kafka {activeConnection.kafkaVersion}</span>}
         <span className="flex items-center gap-1 rounded border border-border px-1.5 py-px text-[10px] text-text-muted">
           <Keyboard size={10} />
           ⌘K

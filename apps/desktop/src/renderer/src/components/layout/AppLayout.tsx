@@ -29,9 +29,7 @@ export function AppLayout({ children, detailPanel }: AppLayoutProps) {
 
   useEffect(() => {
     const onResize = () => {
-      setIsFullScreen(
-        window.innerHeight === screen.height && window.innerWidth === screen.width
-      )
+      setIsFullScreen(window.innerHeight === screen.height && window.innerWidth === screen.width)
     }
     window.addEventListener('resize', onResize)
     onResize()
@@ -48,6 +46,25 @@ export function AppLayout({ children, detailPanel }: AppLayoutProps) {
         return
       }
 
+      if (isMeta && e.key === ',') {
+        e.preventDefault()
+        setCurrentPage('settings')
+        return
+      }
+      if (isMeta && e.key === 'r') {
+        e.preventDefault()
+        window.dispatchEvent(new Event('kafkalens:refresh'))
+        return
+      }
+      if (isMeta && e.key === 't') {
+        e.preventDefault()
+        setCurrentPage('topics')
+        setTimeout(
+          () => document.querySelector<HTMLInputElement>('[data-topic-search]')?.focus(),
+          0
+        )
+        return
+      }
       if (isMeta && PAGE_SHORTCUTS[e.key]) {
         e.preventDefault()
         setCurrentPage(PAGE_SHORTCUTS[e.key])

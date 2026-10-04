@@ -11,7 +11,9 @@ const markdownComponents = {
     </h1>
   ),
   h2: ({ children }: { children?: React.ReactNode }) => (
-    <h2 className="mb-2 mt-5 text-sm font-semibold text-text-primary border-b border-border pb-1.5">{children}</h2>
+    <h2 className="mb-2 mt-5 text-sm font-semibold text-text-primary border-b border-border pb-1.5">
+      {children}
+    </h2>
   ),
   h3: ({ children }: { children?: React.ReactNode }) => (
     <h3 className="mb-1.5 mt-3 text-xs font-semibold text-text-primary">{children}</h3>
@@ -38,20 +40,28 @@ const markdownComponents = {
     <em className="text-warning">{children}</em>
   ),
   code: ({ children }: { children?: React.ReactNode }) => (
-    <code className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-xs text-accent">{children}</code>
+    <code className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-xs text-accent">
+      {children}
+    </code>
   ),
   pre: ({ children }: { children?: React.ReactNode }) => (
-    <pre className="mb-3 overflow-x-auto rounded-lg bg-surface-0 p-3 font-mono text-xs text-text-secondary">{children}</pre>
+    <pre className="mb-3 overflow-x-auto rounded-lg bg-surface-0 p-3 font-mono text-xs text-text-secondary">
+      {children}
+    </pre>
   ),
   blockquote: ({ children }: { children?: React.ReactNode }) => (
-    <blockquote className="mb-3 border-l-2 border-warning pl-3 text-sm text-warning/90">{children}</blockquote>
+    <blockquote className="mb-3 border-l-2 border-warning pl-3 text-sm text-warning/90">
+      {children}
+    </blockquote>
   ),
-  hr: () => <hr className="my-4 border-border" />,
+  hr: () => <hr className="my-4 border-border" />
 }
 
 export function AIMarkdown({ content }: { content: string }) {
   return (
-    <Suspense fallback={<p className="text-sm text-text-secondary whitespace-pre-wrap">{content}</p>}>
+    <Suspense
+      fallback={<p className="text-sm text-text-secondary whitespace-pre-wrap">{content}</p>}
+    >
       <div className="prose-kafkalens">
         <Markdown components={markdownComponents}>{content}</Markdown>
       </div>

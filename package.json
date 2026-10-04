@@ -1,6 +1,6 @@
 {
   "name": "kafkalens",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Open-source Kafka desktop client for inspecting, debugging, and managing Apache Kafka clusters",
   "author": "KafkaLens Contributors",
@@ -13,10 +13,26 @@
     "dev": "npm run dev -w apps/desktop",
     "build": "npm run build -w apps/desktop",
     "preview": "npm run preview -w apps/desktop",
-    "lint": "eslint . --ext .ts,.tsx",
-    "typecheck": "tsc --noEmit"
+    "lint": "eslint .",
+    "typecheck": "npm run typecheck -w apps/desktop",
+    "test": "vitest run",
+    "test:integration": "KAFKALENS_INTEGRATION=1 vitest run tests/kafka.integration.test.ts",
+    "test:desktop": "node scripts/desktop-smoke.mjs",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "test:performance": "KAFKALENS_BENCHMARK=1 vitest run tests/performance.integration.test.ts"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "^22.13.0 || >=24.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@playwright/test": "^1.63.0",
+    "eslint": "^9.39.5",
+    "typescript-eslint": "^8.71.0",
+    "vitest": "5.0.3",
+    "prettier": "^3.8.3"
+  },
+  "overrides": {
+    "@electron/get": "5.1.0"
   }
 }

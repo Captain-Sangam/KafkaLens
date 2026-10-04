@@ -1,3 +1,6 @@
+import { TopicConfigDialog } from './TopicConfigDialog'
+import { useRefresh } from '@/lib/useRefresh'
+import type { TopicMatch } from '@/types'
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   Search,
@@ -18,7 +21,8 @@ import { useDataStore } from '@/stores/dataStore'
 import type { Topic } from '@/types'
 
 type FilterKey = 'all' | 'user' | 'internal' | 'dlq'
-type SortField = 'name' | 'partitions' | 'replicationFactor' | 'messageCount' | 'retentionMs' | 'cleanupPolicy'
+type SortField =
+  'name' | 'partitions' | 'replicationFactor' | 'messageCount' | 'retentionMs' | 'cleanupPolicy'
 type SortDir = 'asc' | 'desc'
 
 const FILTER_PILLS: { key: FilterKey; label: string }[] = [
@@ -53,7 +57,12 @@ function fuzzyMatch(text: string, query: string): boolean {
 interface CreateTopicModalProps {
   open: boolean
   onClose: () => void
-  onSubmit: (opts: { name: string; partitions: number; replicationFactor: number; configs?: Record<string, string> }) => Promise<void>
+  onSubmit: (opts: {
+    name: string
+    partitions: number
+    replicationFactor: number
+    configs?: Record<string, string>
+  }) => Promise<void>
 }
 
 function CreateTopicModal({ open, onClose, onSubmit }: CreateTopicModalProps) {
@@ -108,12 +117,18 @@ function CreateTopicModal({ open, onClose, onSubmit }: CreateTopicModalProps) {
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Create topic"
         className="w-full max-w-md rounded-xl border border-border bg-surface-1 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-border px-6 py-4">
           <h2 className="text-base font-semibold text-text-primary">Create Topic</h2>
-          <button onClick={onClose} className="text-text-muted hover:text-text-primary transition-colors">
+          <button
+            onClick={onClose}
+            className="text-text-muted hover:text-text-primary transition-colors"
+          >
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -252,6 +267,9 @@ function DeleteDialog({ topicName, isProd, onConfirm, onCancel }: DeleteDialogPr
       onClick={onCancel}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Delete topic"
         className="w-full max-w-sm rounded-xl border border-border bg-surface-1 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
@@ -262,8 +280,8 @@ function DeleteDialog({ topicName, isProd, onConfirm, onCancel }: DeleteDialogPr
           <h2 className="text-base font-semibold text-text-primary">Delete Topic</h2>
           <p className="text-center text-sm text-text-secondary">
             Are you sure you want to delete{' '}
-            <span className="font-mono font-medium text-text-primary">{topicName}</span>?
-            This action cannot be undone.
+            <span className="font-mono font-medium text-text-primary">{topicName}</span>? This
+            action cannot be undone.
           </p>
         </div>
 
@@ -274,6 +292,7 @@ function DeleteDialog({ topicName, isProd, onConfirm, onCancel }: DeleteDialogPr
             </label>
             <input
               type="text"
+              aria-label="Resource name confirmation"
               value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)}
               placeholder={topicName}
@@ -313,32 +332,41 @@ function TopicRow({
   isFavorite,
   onToggleFavorite,
   onClick,
-  onDelete
+  onDelete,
+  onConfig
 }: {
   topic: Topic
   isFavorite: boolean
   onToggleFavorite: () => void
   onClick: () => void
   onDelete: () => void
+  onConfig: () => void
 }) {
-  const healthy = topic.underReplicatedPartitions === 0
+  const healthy = topic.underReplicatedPartitions === 0 && !topic.offlinePartitions
 
   return (
     <tr
       className="cursor-pointer bg-surface-0 hover:bg-surface-1 transition-colors group"
+      tabIndex={0}
+      aria-label={`Browse ${topic.name}`}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onClick()
+        }
+      }}
       onClick={onClick}
     >
       <td className="px-3 py-2.5">
         <button
+          aria-label={`Favorite ${topic.name}`}
           onClick={(e) => {
             e.stopPropagation()
             onToggleFavorite()
           }}
           className="text-text-muted hover:text-warning transition-colors"
         >
-          <Star
-            className={`h-4 w-4 ${isFavorite ? 'fill-warning text-warning' : ''}`}
-          />
+          <Star className={`h-4 w-4 ${isFavorite ? 'fill-warning text-warning' : ''}`} />
         </button>
       </td>
       <td className="px-3 py-2.5 text-left">
@@ -359,7 +387,7 @@ function TopicRow({
       <td className="px-3 py-2.5 text-right text-text-secondary">{topic.partitions}</td>
       <td className="px-3 py-2.5 text-right text-text-secondary">{topic.replicationFactor}</td>
       <td className="px-3 py-2.5 text-right text-text-secondary">
-        {topic.messageCount.toLocaleString()}
+        {topic.messageCountError ? 'Unavailable' : topic.messageCount.toLocaleString()}
       </td>
       <td className="px-3 py-2.5 text-right text-text-secondary">
         {formatRetention(topic.retentionMs)}
@@ -377,11 +405,20 @@ function TopicRow({
       </td>
       <td className="px-3 py-2.5 text-right">
         <button
+          className="text-xs text-accent mr-2"
+          onClick={(e) => {
+            e.stopPropagation()
+            onConfig()
+          }}
+        >
+          Config
+        </button>
+        <button
           onClick={(e) => {
             e.stopPropagation()
             onDelete()
           }}
-          className="opacity-0 group-hover:opacity-100 text-text-muted hover:text-danger transition-all"
+          className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-text-muted hover:text-danger transition-all"
           title="Delete topic"
         >
           <Trash2 className="h-4 w-4" />
@@ -400,15 +437,33 @@ function TableSkeleton() {
     <tbody className="divide-y divide-border">
       {Array.from({ length: 8 }).map((_, i) => (
         <tr key={i} className="bg-surface-0 animate-pulse">
-          <td className="px-3 py-2.5"><div className="h-4 w-4 rounded bg-surface-3" /></td>
-          <td className="px-3 py-2.5"><div className="h-4 w-48 rounded bg-surface-3" /></td>
-          <td className="px-3 py-2.5"><div className="ml-auto h-4 w-8 rounded bg-surface-3" /></td>
-          <td className="px-3 py-2.5"><div className="ml-auto h-4 w-8 rounded bg-surface-3" /></td>
-          <td className="px-3 py-2.5"><div className="ml-auto h-4 w-16 rounded bg-surface-3" /></td>
-          <td className="px-3 py-2.5"><div className="ml-auto h-4 w-10 rounded bg-surface-3" /></td>
-          <td className="px-3 py-2.5"><div className="ml-auto h-4 w-14 rounded bg-surface-3" /></td>
-          <td className="px-3 py-2.5"><div className="ml-auto h-4 w-4 rounded bg-surface-3" /></td>
-          <td className="px-3 py-2.5"><div className="ml-auto h-4 w-4 rounded bg-surface-3" /></td>
+          <td className="px-3 py-2.5">
+            <div className="h-4 w-4 rounded bg-surface-3" />
+          </td>
+          <td className="px-3 py-2.5">
+            <div className="h-4 w-48 rounded bg-surface-3" />
+          </td>
+          <td className="px-3 py-2.5">
+            <div className="ml-auto h-4 w-8 rounded bg-surface-3" />
+          </td>
+          <td className="px-3 py-2.5">
+            <div className="ml-auto h-4 w-8 rounded bg-surface-3" />
+          </td>
+          <td className="px-3 py-2.5">
+            <div className="ml-auto h-4 w-16 rounded bg-surface-3" />
+          </td>
+          <td className="px-3 py-2.5">
+            <div className="ml-auto h-4 w-10 rounded bg-surface-3" />
+          </td>
+          <td className="px-3 py-2.5">
+            <div className="ml-auto h-4 w-14 rounded bg-surface-3" />
+          </td>
+          <td className="px-3 py-2.5">
+            <div className="ml-auto h-4 w-4 rounded bg-surface-3" />
+          </td>
+          <td className="px-3 py-2.5">
+            <div className="ml-auto h-4 w-4 rounded bg-surface-3" />
+          </td>
         </tr>
       ))}
     </tbody>
@@ -421,7 +476,7 @@ function TableSkeleton() {
 
 export default function TopicList() {
   const { navigateToTopic, addNotification } = useUIStore()
-  const { activeClusterId, clusters, connections } = useClusterStore()
+  const { activeClusterId, connections } = useClusterStore()
   const {
     topics,
     favorites,
@@ -433,6 +488,10 @@ export default function TopicList() {
     deleteTopic
   } = useDataStore()
 
+  const [configTarget, setConfigTarget] = useState<Topic | null>(null)
+  const [semantic, setSemantic] = useState<TopicMatch[] | null>(null)
+  const [aiLoading, setAILoading] = useState(false)
+  useRefresh(() => activeClusterId && fetchTopics(activeClusterId))
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<FilterKey>('all')
   const [sortField, setSortField] = useState<SortField>('name')
@@ -461,7 +520,12 @@ export default function TopicList() {
   )
 
   const handleCreateTopic = useCallback(
-    async (opts: { name: string; partitions: number; replicationFactor: number; configs?: Record<string, string> }) => {
+    async (opts: {
+      name: string
+      partitions: number
+      replicationFactor: number
+      configs?: Record<string, string>
+    }) => {
       if (!activeClusterId) return
       const success = await createTopic(activeClusterId, opts)
       if (success) {
@@ -504,7 +568,8 @@ export default function TopicList() {
     else if (filter === 'internal') list = list.filter((t) => t.isInternal)
     else if (filter === 'dlq') list = list.filter((t) => t.isDLQ)
 
-    if (search) list = list.filter((t) => fuzzyMatch(t.name, search))
+    if (semantic) list = list.filter((t) => semantic.some((m) => m.name === t.name))
+    else if (search) list = list.filter((t) => fuzzyMatch(t.name, search))
 
     list.sort((a, b) => {
       const aFav = favorites.has(a.name) ? 0 : 1
@@ -521,7 +586,7 @@ export default function TopicList() {
     })
 
     return list
-  }, [topics, search, filter, sortField, sortDir, favorites])
+  }, [topics, search, filter, sortField, sortDir, favorites, semantic])
 
   const columns: { key: SortField; label: string; className?: string }[] = [
     { key: 'name', label: 'Name', className: 'text-left' },
@@ -558,12 +623,33 @@ export default function TopicList() {
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
           <input
             type="text"
+            data-topic-search
+            aria-label="Search topics"
             placeholder="Search topics..."
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value)
+              setSemantic(null)
+            }}
             className="w-full rounded-lg border border-border bg-surface-0 py-2 pl-10 pr-4 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
           />
         </div>
+        <button
+          disabled={!search || aiLoading}
+          className="text-xs text-accent"
+          onClick={async () => {
+            setAILoading(true)
+            const r = await window.api.ai.searchTopics(
+              search,
+              topics.map((t) => t.name)
+            )
+            setAILoading(false)
+            if (r.success) setSemantic(r.data ?? [])
+            else addNotification('error', r.error ?? 'Topic search failed')
+          }}
+        >
+          {aiLoading ? 'Searching…' : 'Search with AI'}
+        </button>
         <div className="flex gap-1">
           {FILTER_PILLS.map((pill) => (
             <button
@@ -581,6 +667,15 @@ export default function TopicList() {
         </div>
       </div>
 
+      {semantic && (
+        <div className="text-xs space-y-1">
+          {semantic.map((m) => (
+            <p key={m.name}>
+              <strong>{m.name}</strong> — {m.reason}
+            </p>
+          ))}
+        </div>
+      )}
       {/* Table */}
       <div className="flex-1 overflow-auto rounded-lg border border-border">
         <table className="w-full text-sm">
@@ -591,6 +686,17 @@ export default function TopicList() {
                 <th
                   key={col.key}
                   className={`px-3 py-2.5 font-medium text-text-secondary cursor-pointer select-none hover:text-text-primary transition-colors ${col.className ?? 'text-right'}`}
+                  tabIndex={0}
+                  aria-sort={
+                    sortField === col.key
+                      ? sortDir === 'asc'
+                        ? 'ascending'
+                        : 'descending'
+                      : 'none'
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSort(col.key)
+                  }}
                   onClick={() => handleSort(col.key)}
                 >
                   <span className="inline-flex items-center gap-1">
@@ -618,6 +724,7 @@ export default function TopicList() {
                   onToggleFavorite={() => handleToggleFavorite(topic.name)}
                   onClick={() => navigateToTopic(topic.name)}
                   onDelete={() => setDeleteTarget(topic.name)}
+                  onConfig={() => setConfigTarget(topic)}
                 />
               ))}
               {filtered.length === 0 && (
@@ -632,6 +739,9 @@ export default function TopicList() {
         </table>
       </div>
 
+      {configTarget && (
+        <TopicConfigDialog topic={configTarget} onClose={() => setConfigTarget(null)} />
+      )}
       {/* Modals */}
       <CreateTopicModal
         open={createModalOpen}
