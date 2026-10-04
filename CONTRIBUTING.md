@@ -1,11 +1,16 @@
 # Contributing to KafkaLens
 
-Use Node 24 and macOS 13+ for desktop development. Install with `npm ci --ignore-scripts`, then `node node_modules/electron/install.js`. Start with `unset ELECTRON_RUN_AS_NODE && npm run dev`.
+For desktop development, use macOS 13+, Node.js 24, and npm 11+.
 
-Read [AGENTS.md](AGENTS.md) for process boundaries, IPC conventions, styling, and destructive-action safeguards. All Kafka, Registry, persistence, credential, and AI work belongs in the main process. Keep the renderer behind the typed preload API.
+```bash
+make install
+make dev
+```
 
-Before opening a pull request, run `npm run check` and the relevant integration checks described in [RELEASE.md](docs/RELEASE.md). Service changes need real Kafka coverage. Test destructive UI actions with a production-labeled disposable fixture. Never use a live production cluster for these checks.
+Before opening a pull request, run `make check` (lint, typechecks, unit tests, and build). For service or desktop behavior changes, also run the relevant fixture checks in the [development guide](docs/DEVELOPMENT.md). Use disposable clusters for destructive-operation checks.
 
-Keep changes focused and explain the user-facing behavior plus validation in the pull request. One maintainer approval and passing CI are required. For substantial new features, open an issue describing the proposed workflow and tradeoffs before implementation. No CLA is required.
+Keep pull requests focused. Describe what changed, why, and the checks you ran using the repository PR template. One maintainer approval and passing CI are required. For substantial features, open an issue describing the workflow before implementation. No CLA is required.
 
-Report security problems privately to a repository maintainer through GitHub private vulnerability reporting, if enabled. Avoid posting credentials or sensitive payloads in public issues.
+Read the [architecture](docs/ARCHITECTURE.md) and [agent guidelines](AGENTS.md) for implementation conventions. Report security issues privately through GitHub vulnerability reporting when available; avoid sharing credentials or sensitive payloads in public issues.
+
+Contributions are covered by the project's [MIT license](LICENSE).

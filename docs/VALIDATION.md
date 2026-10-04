@@ -18,7 +18,7 @@ Status recorded on 4 October 2026. The implementation is based on main `aade000`
 | Keychain credentials | Kafka, Registry, and AI secrets in native Keychain; recoverable migration before SQLite plaintext removal |
 | Broker change history | Durable bounded snapshots, differences, descriptions, cross-broker comparison, cluster defaults, and exports |
 
-Additional work includes typed and validated IPC, renderer isolation, cancellation, raw-byte/tombstone-safe DLQ replay, partition-specific durable reviews, production confirmations, optional response-only AI history, shortcuts/focus handling, accessible theme text contrast, dependency upgrades, Apache license/contribution files, application icons, CI, macOS packaging, release preparation, and explicit update download/restart controls.
+Additional work includes typed and validated IPC, renderer isolation, cancellation, raw-byte/tombstone-safe DLQ replay, partition-specific durable reviews, production confirmations, optional response-only AI history, shortcuts/focus handling, accessible theme text contrast, dependency upgrades, license/contribution files, application icons, CI, macOS packaging, release preparation, and explicit update download/restart controls.
 
 AI history is disabled by default. When enabled, only the last 50 responses and provider/feature metadata are saved; payload inputs and API keys are excluded. AI calls require enablement, sharing consent, and a Keychain-backed key. Background anomaly calls have an additional opt-in.
 

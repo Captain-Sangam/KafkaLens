@@ -1,7 +1,7 @@
 KafkaLens
 Copyright 2026 KafkaLens Contributors
 
-Licensed under the Apache License, Version 2.0.
+Licensed under the MIT License.
 Third-party dependencies retain their respective licenses. The application uses
 Electron, React, KafkaJS, better-sqlite3, avsc, protobufjs, JSONPath Plus, Zod,
 Zustand, Tailwind CSS, Lucide, react-markdown, diff, and electron-updater.
