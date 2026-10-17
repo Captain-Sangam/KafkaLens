@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   Skull,
   Activity,
+  ChevronLeft,
   ChevronRight,
   CircleAlert,
   CircleCheck,
@@ -28,6 +29,51 @@ const STATE_STYLES: Record<ConsumerGroupState, { bg: string; text: string }> = {
   Empty: { bg: 'bg-text-muted/15', text: 'text-text-muted' },
   Dead: { bg: 'bg-danger/15', text: 'text-danger' },
   PreparingRebalance: { bg: 'bg-warning/15', text: 'text-warning' }
+}
+
+const PAGE_SIZE = 5
+
+function pageOf<T>(list: T[], page: number): { page: number; items: T[] } {
+  const p = Math.min(page, Math.max(0, Math.ceil(list.length / PAGE_SIZE) - 1))
+  return { page: p, items: list.slice(p * PAGE_SIZE, (p + 1) * PAGE_SIZE) }
+}
+
+function Pager({
+  page,
+  total,
+  onPage
+}: {
+  page: number
+  total: number
+  onPage: (page: number) => void
+}) {
+  if (total <= PAGE_SIZE) return null
+  const last = Math.ceil(total / PAGE_SIZE) - 1
+  const btn =
+    'rounded p-1 text-accent transition-colors hover:bg-surface-2 hover:text-accent-hover disabled:opacity-40 disabled:hover:bg-transparent'
+  return (
+    <div className="mt-auto flex items-center justify-end gap-2 border-t border-border px-5 py-2 text-xs text-text-muted">
+      <span>
+        {page * PAGE_SIZE + 1}–{Math.min(total, (page + 1) * PAGE_SIZE)} of {total}
+      </span>
+      <button
+        aria-label="Previous page"
+        disabled={page === 0}
+        onClick={() => onPage(page - 1)}
+        className={btn}
+      >
+        <ChevronLeft className="h-3.5 w-3.5" />
+      </button>
+      <button
+        aria-label="Next page"
+        disabled={page >= last}
+        onClick={() => onPage(page + 1)}
+        className={btn}
+      >
+        <ChevronRight className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  )
 }
 
 function formatRetention(ms: number): string {
@@ -166,6 +212,9 @@ export default function ClusterDashboard() {
   const [aiSummary, setAiSummary] = useState<string | null>(null)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
+  const [urpPage, setUrpPage] = useState(0)
+  const [groupsPage, setGroupsPage] = useState(0)
+  const [dlqPage, setDlqPage] = useState(0)
 
   useEffect(() => {
     if (!activeClusterId) return
@@ -205,6 +254,10 @@ export default function ClusterDashboard() {
   )
 
   const dlqTopics = useMemo(() => topics.filter((t) => t.isDLQ), [topics])
+
+  const urpPaged = pageOf(unhealthyTopics, urpPage)
+  const groupsPaged = pageOf(consumerGroups, groupsPage)
+  const dlqPaged = pageOf(dlqTopics, dlqPage)
 
   const handleAiHealthSummary = async () => {
     if (aiLoading) return
@@ -429,27 +482,30 @@ export default function ClusterDashboard() {
           ) : (
             <div className="flex flex-col divide-y divide-border">
               {unhealthyTopics.length > 0 && (
-                <div className="px-5 py-3">
-                  <span className="mb-2 block text-xs font-medium uppercase tracking-wider text-danger">
-                    Under-Replicated
-                  </span>
-                  {unhealthyTopics.map((t) => (
-                    <button
-                      key={t.name}
-                      onClick={() => navigateToTopic(t.name)}
-                      className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left hover:bg-surface-2 transition-colors"
-                    >
-                      <div className="flex items-center gap-2">
-                        <CircleAlert className="h-4 w-4 text-danger" />
-                        <span className="text-sm text-text-primary">{t.name}</span>
-                      </div>
-                      <span className="text-xs text-danger">
-                        {t.underReplicatedPartitions} partition
-                        {t.underReplicatedPartitions !== 1 && 's'}
-                      </span>
-                    </button>
-                  ))}
-                </div>
+                <>
+                  <div className="px-5 py-3">
+                    <span className="mb-2 block text-xs font-medium uppercase tracking-wider text-danger">
+                      Under-Replicated
+                    </span>
+                    {urpPaged.items.map((t) => (
+                      <button
+                        key={t.name}
+                        onClick={() => navigateToTopic(t.name)}
+                        className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left hover:bg-surface-2 transition-colors"
+                      >
+                        <div className="flex items-center gap-2">
+                          <CircleAlert className="h-4 w-4 text-danger" />
+                          <span className="text-sm text-text-primary">{t.name}</span>
+                        </div>
+                        <span className="text-xs text-danger">
+                          {t.underReplicatedPartitions} partition
+                          {t.underReplicatedPartitions !== 1 && 's'}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  <Pager page={urpPaged.page} total={unhealthyTopics.length} onPage={setUrpPage} />
+                </>
               )}
 
               <div className="px-5 py-3">
@@ -497,7 +553,7 @@ export default function ClusterDashboard() {
             </div>
           ) : (
             <div className="flex flex-col">
-              {consumerGroups.map((group) => {
+              {groupsPaged.items.map((group) => {
                 const style = STATE_STYLES[group.state] ?? STATE_STYLES.Empty
                 return (
                   <div
@@ -541,6 +597,9 @@ export default function ClusterDashboard() {
               )}
             </div>
           )}
+          {!initialGroupsLoading && (
+            <Pager page={groupsPaged.page} total={consumerGroups.length} onPage={setGroupsPage} />
+          )}
         </div>
       </div>
 
@@ -570,21 +629,24 @@ export default function ClusterDashboard() {
             ))}
           </div>
         ) : dlqTopics.length > 0 ? (
-          <div className="flex flex-col divide-y divide-border">
-            {dlqTopics.map((t) => (
-              <button
-                key={t.name}
-                onClick={() => navigateToTopic(t.name)}
-                className="flex items-center gap-3 px-5 py-3 text-left hover:bg-surface-2 transition-colors"
-              >
-                <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
-                <span className="truncate text-sm font-medium text-text-primary">{t.name}</span>
-                <span className="ml-auto text-xs text-text-muted">
-                  {t.messageCount.toLocaleString()} msgs &middot; {t.partitions} partitions
-                </span>
-              </button>
-            ))}
-          </div>
+          <>
+            <div className="flex flex-col divide-y divide-border">
+              {dlqPaged.items.map((t) => (
+                <button
+                  key={t.name}
+                  onClick={() => navigateToTopic(t.name)}
+                  className="flex items-center gap-3 px-5 py-3 text-left hover:bg-surface-2 transition-colors"
+                >
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
+                  <span className="truncate text-sm font-medium text-text-primary">{t.name}</span>
+                  <span className="ml-auto text-xs text-text-muted">
+                    {t.messageCount.toLocaleString()} msgs &middot; {t.partitions} partitions
+                  </span>
+                </button>
+              ))}
+            </div>
+            <Pager page={dlqPaged.page} total={dlqTopics.length} onPage={setDlqPage} />
+          </>
         ) : (
           <div className="px-5 py-8 text-center text-sm text-text-muted">
             No dead-letter topics found.
